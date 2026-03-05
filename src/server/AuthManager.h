@@ -1,19 +1,20 @@
 #pragma once
+#include <memory>
 #include <string>
-#include <unordered_set>
-#include <vector>
+#include "auth/ApiAuthConfig.h"
+#include "auth/ApiAuthClient.h"
+#include "auth/AuthCache.h"
 
 class AuthManager {
 public:
-    explicit AuthManager(const std::string& primary_token);
-    
-    // Add multiple tokens (e.g. from environment or config file)
-    void addTokens(const std::vector<std::string>& tokens);
+    explicit AuthManager(const ApiAuthConfig& config);
 
     bool isAuthEnabled() const;
-    bool validate(const std::string& token) const;
+    bool validate(const std::string& token);
 
 private:
-    std::unordered_set<std::string> valid_tokens_;
+    std::unique_ptr<ApiAuthClient> api_client_;
+    AuthCache cache_;
     bool auth_enabled_;
+    int cache_ttl_seconds_;
 };
