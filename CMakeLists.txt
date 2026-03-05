@@ -6,23 +6,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Opciones
 option(BUILD_TESTS "Build tests" ON)
+option(BUILD_SERVER "Build the server executable" ON)
 
 # Agregar whisper.cpp como subdirectorio
 add_subdirectory(third_party/whisper.cpp)
 
-# Encontrar dependencias
-find_package(Boost REQUIRED)
-find_package(OpenSSL REQUIRED)
-
-# Agregar nlohmann/json para protocolo JSON
-include(FetchContent)
-FetchContent_Declare(json
-    GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG v3.11.3
-)
-FetchContent_MakeAvailable(json)
-
-# Librería StreamingWhisperEngine
+# Librería StreamingWhisperEngine (independiente de Boost/OpenSSL)
 add_library(streaming_whisper
     src/whisper/StreamingWhisperEngine.cpp
 )
@@ -36,29 +25,59 @@ target_link_libraries(streaming_whisper PUBLIC
     whisper
 )
 
+# Servidor principal (requiere Boost, OpenSSL, nlohmann_json)
+if(BUILD_SERVER)
+    find_package(Boost REQUIRED)
+    find_package(OpenSSL REQUIRED)
 
+    # nlohmann/json para protocolo JSON
+    include(FetchContent)
+    FetchContent_Declare(json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG v3.11.3
+    )
+    FetchContent_MakeAvailable(json)
 
-# Servidor principal de streaming
-add_executable(transcription_server
-    src/server.cpp
-    src/server/StreamingSession.cpp
-    src/server/AuthManager.cpp
-    src/server/ConnectionLimiter.cpp
-    src/server/ConnectionGuard.cpp
-)
+    # Mosquitto C++ (MQTT)
+    find_path(MOSQUITTO_INCLUDE_DIR mosquittopp.h)
+    find_library(MOSQUITTO_LIBRARY mosquitto)
+    find_library(MOSQUITTO_PP_LIBRARY mosquittopp)
 
-target_include_directories(transcription_server PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-)
+    if(MOSQUITTO_INCLUDE_DIR AND MOSQUITTO_LIBRARY AND MOSQUITTO_PP_LIBRARY)
+        set(MOSQUITTO_FOUND TRUE)
+        set(MOSQUITTO_LIBRARIES ${MOSQUITTO_PP_LIBRARY} ${MOSQUITTO_LIBRARY})
+        set(MOSQUITTO_INCLUDE_DIRS ${MOSQUITTO_INCLUDE_DIR})
+        message(STATUS "Mosquitto C++ found: ${MOSQUITTO_INCLUDE_DIR}")
+    else()
+        message(FATAL_ERROR "Mosquitto C++ not found. Install libmosquittopp-dev.")
+    endif()
 
-target_link_libraries(transcription_server PRIVATE 
-    Boost::boost 
-    pthread
-    streaming_whisper
-    nlohmann_json::nlohmann_json
-    OpenSSL::SSL
-    OpenSSL::Crypto
-)
+    add_executable(transcription_server
+        src/server.cpp
+        src/server/StreamingSession.cpp
+        src/server/AuthManager.cpp
+        src/server/ConnectionLimiter.cpp
+        src/server/ConnectionGuard.cpp
+        src/mqtt/MQTTPublisher.cpp
+        src/auth/ApiAuthClient.cpp
+        src/auth/AuthCache.cpp
+    )
+
+    target_include_directories(transcription_server PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+        ${MOSQUITTO_INCLUDE_DIRS}
+    )
+
+    target_link_libraries(transcription_server PRIVATE
+        Boost::boost
+        pthread
+        streaming_whisper
+        nlohmann_json::nlohmann_json
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        ${MOSQUITTO_LIBRARIES}
+    )
+endif()
 
 # Tests
 if(BUILD_TESTS)
