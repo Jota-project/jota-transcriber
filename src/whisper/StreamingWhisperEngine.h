@@ -4,29 +4,28 @@
 #include <memory>
 #include <mutex>
 
-// Forward declaration para evitar incluir whisper.h en el header
+// Forward declarations
 struct whisper_context;
+struct whisper_state;
 
 /**
  * @brief Motor de transcripción en streaming usando whisper.cpp
  * 
- * Esta clase encapsula la API C de whisper.cpp para procesar audio en streaming.
- * Permite acumular chunks de audio y transcribirlos cuando sea necesario.
- * 
- * Thread-safe: Puede ser usado desde múltiples threads.
+ * Encapsula la API C de whisper.cpp para procesar audio en streaming.
+ * Usa un whisper_context compartido (pesos, solo lectura) y un
+ * whisper_state propio (estado de decodificación, thread-safe).
+ *
+ * Thread-safe: puede ser usado desde múltiples threads.
  */
 class StreamingWhisperEngine {
 public:
     /**
-     * @brief Constructor
-     * @param model_path Ruta al modelo .bin de whisper
-     * @throws std::runtime_error si el modelo no se puede cargar
+     * @brief Constructor con contexto compartido
+     * @param shared_ctx  whisper_context ya cargado (propiedad del ModelCache)
+     * @throws std::runtime_error si no se puede crear el state
      */
-    explicit StreamingWhisperEngine(const std::string& model_path);
+    explicit StreamingWhisperEngine(whisper_context* shared_ctx);
     
-    /**
-     * @brief Destructor - libera recursos de whisper
-     */
     ~StreamingWhisperEngine();
     
     // No copiable
@@ -67,33 +66,44 @@ public:
      * @param n_threads Número de threads (default: 4)
      */
     void setThreads(int n_threads);
+
+    /**
+     * @brief Configurar tamaño de beam para beam search
+     * @param beam_size Tamaño del beam (default: 5). 1 = greedy.
+     */
+    void setBeamSize(int beam_size);
+
+    /**
+     * @brief Configurar prompt inicial para guiar la transcripción
+     * @param prompt Texto de contexto (ej: "Transcripción en español")
+     */
+    void setInitialPrompt(const std::string& prompt);
     
     /**
-     * @brief Verificar si el modelo está cargado correctamente
+     * @brief Verificar si el engine está listo
      */
-    bool isModelLoaded() const;
+    bool isReady() const;
     
     /**
      * @brief Convertir audio PCM int16 a float32
-     * @param pcm16 Audio en formato int16 [-32768, 32767]
-     * @return Audio en formato float32 [-1.0, 1.0]
      */
     static std::vector<float> convertInt16ToFloat32(const std::vector<int16_t>& pcm16);
     
     /**
      * @brief Convertir bytes raw a PCM float32
-     * @param bytes Bytes raw (little-endian int16)
-     * @return Audio en formato float32
      */
     static std::vector<float> convertBytesToFloat32(const std::vector<uint8_t>& bytes);
 
 private:
-    whisper_context* ctx_;
+    whisper_context* ctx_;       // Shared, NOT owned
+    whisper_state*   state_;     // Owned, per-session
     std::vector<float> audio_buffer_;
     mutable std::mutex buffer_mutex_;
     
-    // Parámetros de configuración
+    // Configuration
     std::string language_;
+    std::string initial_prompt_;
     int n_threads_;
-    int max_buffer_samples_; // Máximo de samples en buffer (30 segundos @ 16kHz)
+    int beam_size_;
+    int max_buffer_samples_; // Max samples in buffer (30s @ 16kHz)
 };

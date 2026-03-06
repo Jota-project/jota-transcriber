@@ -4,52 +4,55 @@
 #include <cstring>
 #include <iostream>
 
-StreamingWhisperEngine::StreamingWhisperEngine(const std::string& model_path)
-    : ctx_(nullptr), language_("es"), n_threads_(4), max_buffer_samples_(16000 * 30) {
-    
-    // Inicializar contexto de whisper con parámetros por defecto
-    whisper_context_params cparams = whisper_context_default_params();
-    cparams.use_gpu = true; // Forzar uso de GPU si está disponible (CUDA/Metal)
-    ctx_ = whisper_init_from_file_with_params(model_path.c_str(), cparams);
+StreamingWhisperEngine::StreamingWhisperEngine(whisper_context* shared_ctx)
+    : ctx_(shared_ctx),
+      state_(nullptr),
+      language_("es"),
+      n_threads_(4),
+      beam_size_(5),
+      max_buffer_samples_(16000 * 30) {
+
     if (!ctx_) {
-        throw std::runtime_error("Failed to load whisper model: " + model_path);
+        throw std::runtime_error("[StreamingWhisperEngine] Null whisper context");
     }
-    
-    // Pre-reservar espacio para el buffer (30 segundos @ 16kHz)
+
+    // Create a per-session state (lightweight, ~MB)
+    state_ = whisper_init_state(ctx_);
+    if (!state_) {
+        throw std::runtime_error("[StreamingWhisperEngine] Failed to create whisper state");
+    }
+
+    // Pre-reserve buffer (30 seconds @ 16kHz)
     audio_buffer_.reserve(max_buffer_samples_);
-    
-    std::cout << "[StreamingWhisperEngine] Modelo cargado: " << model_path << std::endl;
+
+    std::cout << "[StreamingWhisperEngine] Session state created" << std::endl;
 }
 
 StreamingWhisperEngine::~StreamingWhisperEngine() {
-    if (ctx_) {
-        whisper_free(ctx_);
-        ctx_ = nullptr;
+    if (state_) {
+        whisper_free_state(state_);
+        state_ = nullptr;
     }
+    // ctx_ is NOT freed here — owned by ModelCache
 }
 
 void StreamingWhisperEngine::processAudioChunk(const std::vector<float>& pcm_data) {
     std::lock_guard<std::mutex> lock(buffer_mutex_);
     
-    // Calcular el tamaño final esperado
     size_t new_total_size = audio_buffer_.size() + pcm_data.size();
     
-    if (new_total_size > max_buffer_samples_) {
-        // Si el nuevo chunk ya es más grande que el buffer máximo,
-        // nos quedamos solo con la parte final del nuevo chunk
-        if (pcm_data.size() >= max_buffer_samples_) {
+    if (new_total_size > static_cast<size_t>(max_buffer_samples_)) {
+        if (pcm_data.size() >= static_cast<size_t>(max_buffer_samples_)) {
             audio_buffer_.clear();
             audio_buffer_.insert(audio_buffer_.end(), 
                                pcm_data.end() - max_buffer_samples_, 
                                pcm_data.end());
         } else {
-            // Si no, eliminamos lo necesario del principio del buffer existente
             size_t to_discard = new_total_size - max_buffer_samples_;
             audio_buffer_.erase(audio_buffer_.begin(), audio_buffer_.begin() + to_discard);
             audio_buffer_.insert(audio_buffer_.end(), pcm_data.begin(), pcm_data.end());
         }
     } else {
-        // Si cabe, simplemente agregamos
         audio_buffer_.insert(audio_buffer_.end(), pcm_data.begin(), pcm_data.end());
     }
 }
@@ -61,31 +64,53 @@ std::string StreamingWhisperEngine::transcribe() {
         return "";
     }
     
-    // Configurar parámetros de whisper
-    whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-    params.language = language_.c_str();
-    params.n_threads = n_threads_;
-    params.print_progress = false;
+    // Use beam search for better quality
+    whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_BEAM_SEARCH);
+    params.beam_search.beam_size = beam_size_;
+
+    params.language        = language_.c_str();
+    params.n_threads       = n_threads_;
+    params.print_progress  = false;
     params.print_timestamps = false;
-    params.print_realtime = false;
-    params.print_special = false;
-    params.translate = false;
-    params.no_context = true;
-    params.single_segment = false;
-    
-    // Ejecutar transcripción
-    int result = whisper_full(ctx_, params, audio_buffer_.data(), audio_buffer_.size());
+    params.print_realtime  = false;
+    params.print_special   = false;
+    params.translate       = false;
+    params.single_segment  = false;
+
+    // Quality tuning
+    params.no_context      = false;   // Use previous transcription context
+    params.suppress_blank  = true;    // Suppress blank tokens
+    params.suppress_nst    = true;    // Suppress non-speech tokens
+
+    // Temperature: start deterministic, fall back with increment
+    params.temperature     = 0.0f;
+    params.temperature_inc = 0.2f;
+    params.entropy_thold   = 2.4f;
+    params.logprob_thold   = -1.0f;
+    params.no_speech_thold = 0.6f;
+
+    // Initial prompt for domain guidance
+    if (!initial_prompt_.empty()) {
+        params.initial_prompt = initial_prompt_.c_str();
+    }
+
+    // Use per-session state for thread safety
+    int result = whisper_full_with_state(
+        ctx_, state_, params,
+        audio_buffer_.data(),
+        static_cast<int>(audio_buffer_.size())
+    );
     
     if (result != 0) {
         throw std::runtime_error("Whisper transcription failed with code: " + std::to_string(result));
     }
     
-    // Extraer texto transcrito
+    // Extract transcribed text from state
     std::string transcription;
-    const int n_segments = whisper_full_n_segments(ctx_);
+    const int n_segments = whisper_full_n_segments_from_state(state_);
     
     for (int i = 0; i < n_segments; ++i) {
-        const char* text = whisper_full_get_segment_text(ctx_, i);
+        const char* text = whisper_full_get_segment_text_from_state(state_, i);
         if (text) {
             transcription += text;
         }
@@ -114,8 +139,18 @@ void StreamingWhisperEngine::setThreads(int n_threads) {
     }
 }
 
-bool StreamingWhisperEngine::isModelLoaded() const {
-    return ctx_ != nullptr;
+void StreamingWhisperEngine::setBeamSize(int beam_size) {
+    if (beam_size > 0) {
+        beam_size_ = beam_size;
+    }
+}
+
+void StreamingWhisperEngine::setInitialPrompt(const std::string& prompt) {
+    initial_prompt_ = prompt;
+}
+
+bool StreamingWhisperEngine::isReady() const {
+    return ctx_ != nullptr && state_ != nullptr;
 }
 
 std::vector<float> StreamingWhisperEngine::convertInt16ToFloat32(const std::vector<int16_t>& pcm16) {
@@ -127,10 +162,7 @@ std::vector<float> StreamingWhisperEngine::convertInt16ToFloat32(const std::vect
 }
 
 std::vector<float> StreamingWhisperEngine::convertBytesToFloat32(const std::vector<uint8_t>& bytes) {
-    // Convertir bytes a int16 (little-endian)
     std::vector<int16_t> pcm16(bytes.size() / 2);
     std::memcpy(pcm16.data(), bytes.data(), bytes.size());
-    
-    // Convertir int16 a float32
     return convertInt16ToFloat32(pcm16);
 }
