@@ -54,4 +54,4 @@ COPY --from=builder /app/generate_certs.sh /app/generate_certs.sh
 RUN mkdir -p /app/models
 EXPOSE 8003
 
-CMD ["./transcription_server", "--bind", "0.0.0.0", "--port", "8003", "--model", "/app/models/ggml-base.bin"]
+CMD ["./transcription_server"]

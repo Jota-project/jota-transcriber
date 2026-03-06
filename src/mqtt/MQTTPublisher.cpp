@@ -1,7 +1,7 @@
 #include "MQTTPublisher.h"
 #include "MQTTConfig.h"
 #include <nlohmann/json.hpp>
-#include <iostream>
+#include "log/Log.h"
 
 using json = nlohmann::json;
 
@@ -76,8 +76,8 @@ bool MQTTPublisher::connect()
     );
 
     if (rc != MOSQ_ERR_SUCCESS) {
-        std::cerr << "[MQTT] connect() failed: " << mosquitto_strerror(rc)
-                  << " (" << config_.broker_host << ":" << config_.broker_port << ")\n";
+        Log::error(std::string("[MQTT] connect() failed: ") + mosquitto_strerror(rc) +
+                   " (" + config_.broker_host + ":" + std::to_string(config_.broker_port) + ")");
         return false;
     }
 
@@ -103,8 +103,7 @@ bool MQTTPublisher::publishTranscription(const TranscriptionEvent& event)
         return true; // only final transcriptions are published
 
     if (!connected_) {
-        std::cerr << "[MQTT] publishTranscription: not connected, dropping final for session "
-                  << event.session_id << "\n";
+        Log::warn("[MQTT] not connected, dropping final transcription", event.session_id);
         return false;
     }
 
@@ -121,8 +120,8 @@ bool MQTTPublisher::publishTranscription(const TranscriptionEvent& event)
     );
 
     if (rc != MOSQ_ERR_SUCCESS) {
-        std::cerr << "[MQTT] publish() failed: " << mosquitto_strerror(rc)
-                  << " topic=" << topic << "\n";
+        Log::error(std::string("[MQTT] publish() failed: ") + mosquitto_strerror(rc) +
+                   " topic=" + topic);
         return false;
     }
 
@@ -158,10 +157,9 @@ void MQTTPublisher::on_connect(int rc)
 {
     if (rc == MOSQ_ERR_SUCCESS) {
         connected_ = true;
-        std::cout << "[MQTT] Connected to " << config_.broker_host
-                  << ":" << config_.broker_port << "\n";
+        Log::info("[MQTT] Connected to " + config_.broker_host + ":" + std::to_string(config_.broker_port));
     } else {
-        std::cerr << "[MQTT] on_connect error: " << mosquitto_strerror(rc) << "\n";
+        Log::error(std::string("[MQTT] on_connect error: ") + mosquitto_strerror(rc));
     }
 }
 
@@ -169,7 +167,7 @@ void MQTTPublisher::on_disconnect(int rc)
 {
     connected_ = false;
     if (rc != MOSQ_ERR_SUCCESS) {
-        std::cerr << "[MQTT] Unexpected disconnect: " << mosquitto_strerror(rc) << "\n";
+        Log::warn(std::string("[MQTT] Unexpected disconnect: ") + mosquitto_strerror(rc));
     }
 }
 
