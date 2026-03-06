@@ -11,7 +11,7 @@
 #define PROJECT_ROOT "."
 #endif
 
-const std::string TEST_MODEL_PATH = std::string(PROJECT_ROOT) + "/third_party/whisper.cpp/models/ggml-base.bin";
+const std::string TEST_MODEL_PATH = std::string(PROJECT_ROOT) + "/third_party/whisper.cpp/models/ggml-small.bin";
 
 /**
  * Helper: load a whisper_context for tests

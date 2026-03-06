@@ -2,7 +2,7 @@
 #include <string>
 
 struct ServerConfig {
-    std::string model_path = "third_party/whisper.cpp/models/ggml-base.bin";
+    std::string model_path = "third_party/whisper.cpp/models/ggml-small.bin";
     std::string bind_address = "0.0.0.0";
     unsigned short port = 9001;
     std::string cert_path;
