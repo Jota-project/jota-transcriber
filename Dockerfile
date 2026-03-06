@@ -43,7 +43,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libmosquittopp1 \
     libgomp1 \
     ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -ms /bin/bash appuser
 
 WORKDIR /app
 
@@ -51,7 +52,9 @@ WORKDIR /app
 COPY --from=builder /app/build/transcription_server /app/transcription_server
 COPY --from=builder /app/generate_certs.sh /app/generate_certs.sh
 
-RUN mkdir -p /app/models
+RUN mkdir -p /app/models && chown -R appuser:appuser /app
+USER appuser
+
 EXPOSE 8003
 
 CMD ["./transcription_server"]

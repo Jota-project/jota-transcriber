@@ -49,12 +49,20 @@ public:
     }
 
     /**
-     * @brief Get telemetry metrics
+     * @brief Get telemetry metrics in Prometheus format
      */
     std::string getMetrics() const {
         std::lock_guard<std::mutex> lock(mutex_);
-        return "{\"active_inferences\": " + std::to_string(active_count_) + 
-               ", \"max_inferences\": " + std::to_string(max_concurrent_) + "}";
+        return "transcription_active_inferences " + std::to_string(active_count_) + "\n" +
+               "transcription_max_inferences " + std::to_string(max_concurrent_) + "\n";
+    }
+
+    /**
+     * @brief Check if there is capacity for new inferences
+     */
+    bool hasCapacity() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return active_count_ < max_concurrent_;
     }
 
     // RAII guard for exception-safe acquire/release

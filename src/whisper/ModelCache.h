@@ -129,12 +129,12 @@ public:
     }
 
     /**
-     * @brief Get telemetry metrics
+     * @brief Get telemetry metrics in Prometheus format
      */
     std::string getMetrics() const {
         std::lock_guard<std::mutex> lock(mutex_);
-        return "{\"is_loaded\": " + std::string(ctx_ ? "true" : "false") + 
-               ", \"ref_count\": " + std::to_string(ref_count_) + "}";
+        return "transcription_model_loaded " + std::to_string(ctx_ ? 1 : 0) + "\n" +
+               "transcription_model_ref_count " + std::to_string(ref_count_) + "\n";
     }
 
     // Non-copyable

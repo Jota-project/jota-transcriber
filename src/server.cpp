@@ -20,6 +20,7 @@
 #include "mqtt/MQTTPublisher.h"
 #include "whisper/ModelCache.h"
 #include "whisper/InferenceLimiter.h"
+#include "server/SessionTracker.h"
 #include "log/Log.h"
 
 using tcp = boost::asio::ip::tcp;
@@ -262,21 +263,48 @@ void handleSession(tcp::socket socket,
             std::string cache_metrics = ModelCache::instance().getMetrics();
             std::string conn_metrics = limiter->getMetrics();
 
-            std::string combined = "{\n"
-                                   "  \"inference\": " + inf_metrics + ",\n"
-                                   "  \"cache\": " + cache_metrics + ",\n"
-                                   "  \"connections\": " + conn_metrics + "\n"
-                                   "}";
+            std::string combined = 
+                "# HELP transcription_active_inferences Number of concurrent inferences\n"
+                "# TYPE transcription_active_inferences gauge\n" +
+                inf_metrics +
+                "# HELP transcription_model_loaded Whether the model is currently in memory (1=yes, 0=no)\n"
+                "# TYPE transcription_model_loaded gauge\n" +
+                cache_metrics +
+                "# HELP transcription_active_connections Number of active WebSocket connections\n"
+                "# TYPE transcription_active_connections gauge\n" +
+                conn_metrics;
 
             boost::beast::http::response<boost::beast::http::string_body> res;
             res.version(req.version());
             res.result(boost::beast::http::status::ok);
             res.set(boost::beast::http::field::server, BOOST_BEAST_VERSION_STRING);
-            res.set(boost::beast::http::field::content_type, "application/json");
+            res.set(boost::beast::http::field::content_type, "text/plain; version=0.0.4");
             res.body() = combined;
             res.prepare_payload();
             boost::beast::http::write(socket, res);
             return; // Metrics served, close connection
+        } else if (req.target() == "/health") {
+            boost::beast::http::response<boost::beast::http::string_body> res;
+            res.version(req.version());
+            res.result(boost::beast::http::status::ok);
+            res.set(boost::beast::http::field::server, BOOST_BEAST_VERSION_STRING);
+            res.set(boost::beast::http::field::content_type, "application/json");
+            res.body() = "{\"status\": \"ok\"}";
+            res.prepare_payload();
+            boost::beast::http::write(socket, res);
+            return; // close connection
+        } else if (req.target() == "/ready") {
+            // Check if server is too busy
+            bool is_busy = !InferenceLimiter::instance().hasCapacity();
+            boost::beast::http::response<boost::beast::http::string_body> res;
+            res.version(req.version());
+            res.result(is_busy ? boost::beast::http::status::service_unavailable : boost::beast::http::status::ok);
+            res.set(boost::beast::http::field::server, BOOST_BEAST_VERSION_STRING);
+            res.set(boost::beast::http::field::content_type, "application/json");
+            res.body() = is_busy ? "{\"status\": \"busy\"}" : "{\"status\": \"ready\"}";
+            res.prepare_payload();
+            boost::beast::http::write(socket, res);
+            return; // close connection
         }
 
         if (ssl_ctx) {
@@ -386,9 +414,26 @@ int main(int argc, char* argv[]) {
         Log::info("Listening on " + std::string(use_ssl ? "wss" : "ws") +
                   "://" + config.bind_address + ":" + std::to_string(config.port));
 
-        while (true) {
+        boost::asio::signal_set signals(ioc, SIGINT, SIGTERM);
+        signals.async_wait([&](boost::system::error_code const&, int) {
+            Log::info("Received termination signal, performing graceful shutdown...");
+            acceptor.close(); // Stop accepting new connections
+            SessionTracker::instance().shutdownAll(); // Interrupt active sessions
+            // The io_context will run out of work naturally if we wait briefly, or we can just exit
+            std::this_thread::sleep_for(std::chrono::seconds(2)); // Give 2 seconds for buffers to flush
+            std::exit(0);
+        });
+
+        while (acceptor.is_open()) {
             tcp::socket socket(ioc);
-            acceptor.accept(socket);
+            boost::system::error_code ec;
+            acceptor.accept(socket, ec);
+
+            if (ec) {
+                if (ec == boost::asio::error::operation_aborted) break;
+                Log::error("Accept error: " + ec.message());
+                continue;
+            }
 
             std::string client_ip = socket.remote_endpoint().address().to_string();
 

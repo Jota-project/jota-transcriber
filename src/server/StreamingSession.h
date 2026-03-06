@@ -10,6 +10,7 @@
 #include <iostream>
 #include "whisper/StreamingWhisperEngine.h"
 #include "whisper/ModelCache.h"
+#include "server/SessionTracker.h"
 #include "AuthManager.h"
 #include "ConnectionGuard.h"
 #include "mqtt/MQTTPublisher.h"
@@ -23,7 +24,7 @@ using tcp = net::ip::tcp;
 using json = nlohmann::json;
 
 template <class StreamType>
-class StreamingSession : public std::enable_shared_from_this<StreamingSession<StreamType>> {
+class StreamingSession : public std::enable_shared_from_this<StreamingSession<StreamType>>, public SessionTracker::SessionBase {
 public:
     StreamingSession(
         StreamType&& ws,
@@ -47,14 +48,24 @@ public:
           whisper_threads_(whisper_threads),
           whisper_initial_prompt_(whisper_initial_prompt),
           session_timeout_sec_(session_timeout_sec),
-          model_acquired_(false)
+          model_acquired_(false),
+          bytes_received_in_window_(0),
+          rate_limit_start_(std::chrono::steady_clock::now())
     {
         session_id_ = generateSessionId();
         Log::info("Session created", session_id_);
+        SessionTracker::instance().add(this);
     }
 
-    ~StreamingSession() {
+    ~StreamingSession() override {
+        SessionTracker::instance().remove(this);
         releaseModel();
+    }
+
+    void shutdown() override {
+        // Triggered asynchronously by signal handler. We try to close cleanly if we can.
+        boost::system::error_code ec;
+        beast::get_lowest_layer(ws_).cancel(ec);
     }
 
     void run() {
@@ -152,6 +163,31 @@ private:
     }
 
     void handleBinaryMessage(const std::vector<unsigned char>& data) {
+        // Enforce Binary Rate Limit (QoS)
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(now - rate_limit_start_).count();
+        
+        bytes_received_in_window_ += data.size();
+        
+        if (elapsed_s >= 3) {
+            // max 200 KB/s over 3 seconds = 600 KB window limit
+            const size_t MAX_BYTES_PER_WINDOW = 200 * 1024 * 3;
+            if (bytes_received_in_window_ > MAX_BYTES_PER_WINDOW) {
+                Log::warn("Rate limit exceeded (" + std::to_string(bytes_received_in_window_) + 
+                          " bytes in " + std::to_string(elapsed_s) + "s)", session_id_);
+                boost::system::error_code ec;
+                ws_.close(websocket::close_reason(websocket::close_code::policy_error, "Rate limit exceeded"), ec);
+                return;
+            }
+            rate_limit_start_ = now;
+            bytes_received_in_window_ = 0;
+        }
+
+        if (data.size() < 44) { // WAV header is 44 bytes, so anything smaller is not a valid audio file
+            Log::warn("Received binary data too small to be a WAV file (" + std::to_string(data.size()) + " bytes)", session_id_);
+            return;
+        }
+
         if (!configured_) {
             Log::warn("Binary frame received before config (" + std::to_string(data.size()) + " bytes)", session_id_);
             sendError("Session not configured. Send 'config' first.", "NOT_CONFIGURED");
@@ -403,6 +439,10 @@ private:
     std::string whisper_initial_prompt_;
     int session_timeout_sec_;
     bool model_acquired_;
+    
+    // QoS Rate limiting
+    size_t bytes_received_in_window_;
+    std::chrono::steady_clock::time_point rate_limit_start_;
 
     // Sliding window logic
     size_t transcription_offset_;
