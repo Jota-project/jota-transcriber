@@ -253,77 +253,86 @@ void handleSession(tcp::socket socket,
     ConnectionGuard guard(limiter, client_ip);
 
     try {
-        // Check for /metrics endpoint before upgrading to WebSocket
         boost::beast::flat_buffer buffer;
         boost::beast::http::request<boost::beast::http::string_body> req;
-        boost::beast::http::read(socket, buffer, req);
 
-        if (req.target() == "/metrics") {
-            std::string inf_metrics = InferenceLimiter::instance().getMetrics();
-            std::string cache_metrics = ModelCache::instance().getMetrics();
-            std::string conn_metrics = limiter->getMetrics();
+        auto handle_http_request = [&](auto& stream) -> bool {
+            if (req.target() == "/metrics") {
+                std::string inf_metrics = InferenceLimiter::instance().getMetrics();
+                std::string cache_metrics = ModelCache::instance().getMetrics();
+                std::string conn_metrics = limiter->getMetrics();
 
-            std::string combined = 
-                "# HELP transcription_active_inferences Number of concurrent inferences\n"
-                "# TYPE transcription_active_inferences gauge\n" +
-                inf_metrics +
-                "# HELP transcription_model_loaded Whether the model is currently in memory (1=yes, 0=no)\n"
-                "# TYPE transcription_model_loaded gauge\n" +
-                cache_metrics +
-                "# HELP transcription_active_connections Number of active WebSocket connections\n"
-                "# TYPE transcription_active_connections gauge\n" +
-                conn_metrics;
+                std::string combined = 
+                    "# HELP transcription_active_inferences Number of concurrent inferences\n"
+                    "# TYPE transcription_active_inferences gauge\n" +
+                    inf_metrics +
+                    "# HELP transcription_model_loaded Whether the model is currently in memory (1=yes, 0=no)\n"
+                    "# TYPE transcription_model_loaded gauge\n" +
+                    cache_metrics +
+                    "# HELP transcription_active_connections Number of active WebSocket connections\n"
+                    "# TYPE transcription_active_connections gauge\n" +
+                    conn_metrics;
 
-            boost::beast::http::response<boost::beast::http::string_body> res;
-            res.version(req.version());
-            res.result(boost::beast::http::status::ok);
-            res.set(boost::beast::http::field::server, BOOST_BEAST_VERSION_STRING);
-            res.set(boost::beast::http::field::content_type, "text/plain; version=0.0.4");
-            res.body() = combined;
-            res.prepare_payload();
-            boost::beast::http::write(socket, res);
-            return; // Metrics served, close connection
-        } else if (req.target() == "/health") {
-            boost::beast::http::response<boost::beast::http::string_body> res;
-            res.version(req.version());
-            res.result(boost::beast::http::status::ok);
-            res.set(boost::beast::http::field::server, BOOST_BEAST_VERSION_STRING);
-            res.set(boost::beast::http::field::content_type, "application/json");
-            res.body() = "{\"status\": \"ok\"}";
-            res.prepare_payload();
-            boost::beast::http::write(socket, res);
-            return; // close connection
-        } else if (req.target() == "/ready") {
-            // Check if server is too busy
-            bool is_busy = !InferenceLimiter::instance().hasCapacity();
-            boost::beast::http::response<boost::beast::http::string_body> res;
-            res.version(req.version());
-            res.result(is_busy ? boost::beast::http::status::service_unavailable : boost::beast::http::status::ok);
-            res.set(boost::beast::http::field::server, BOOST_BEAST_VERSION_STRING);
-            res.set(boost::beast::http::field::content_type, "application/json");
-            res.body() = is_busy ? "{\"status\": \"busy\"}" : "{\"status\": \"ready\"}";
-            res.prepare_payload();
-            boost::beast::http::write(socket, res);
-            return; // close connection
-        }
+                boost::beast::http::response<boost::beast::http::string_body> res;
+                res.version(req.version());
+                res.result(boost::beast::http::status::ok);
+                res.set(boost::beast::http::field::server, BOOST_BEAST_VERSION_STRING);
+                res.set(boost::beast::http::field::content_type, "text/plain; version=0.0.4");
+                res.body() = combined;
+                res.prepare_payload();
+                boost::beast::http::write(stream, res);
+                return true;
+            } else if (req.target() == "/health") {
+                boost::beast::http::response<boost::beast::http::string_body> res;
+                res.version(req.version());
+                res.result(boost::beast::http::status::ok);
+                res.set(boost::beast::http::field::server, BOOST_BEAST_VERSION_STRING);
+                res.set(boost::beast::http::field::content_type, "application/json");
+                res.body() = "{\"status\": \"ok\"}";
+                res.prepare_payload();
+                boost::beast::http::write(stream, res);
+                return true;
+            } else if (req.target() == "/ready") {
+                bool is_busy = !InferenceLimiter::instance().hasCapacity();
+                boost::beast::http::response<boost::beast::http::string_body> res;
+                res.version(req.version());
+                res.result(is_busy ? boost::beast::http::status::service_unavailable : boost::beast::http::status::ok);
+                res.set(boost::beast::http::field::server, BOOST_BEAST_VERSION_STRING);
+                res.set(boost::beast::http::field::content_type, "application/json");
+                res.body() = is_busy ? "{\"status\": \"busy\"}" : "{\"status\": \"ready\"}";
+                res.prepare_payload();
+                boost::beast::http::write(stream, res);
+                return true;
+            }
+            return false;
+        };
 
         if (ssl_ctx) {
-            websocket::stream<ssl::stream<tcp::socket>> ws(std::move(socket), *ssl_ctx);
-            ws.next_layer().handshake(ssl::stream_base::server);
+            ssl::stream<tcp::socket> ssl_stream(std::move(socket), *ssl_ctx);
+            ssl_stream.handshake(ssl::stream_base::server);
+            boost::beast::http::read(ssl_stream, buffer, req);
+            
+            if (handle_http_request(ssl_stream)) return;
+
+            websocket::stream<ssl::stream<tcp::socket>> ws(std::move(ssl_stream));
             auto session = std::make_shared<StreamingSession<websocket::stream<ssl::stream<tcp::socket>>>>(
                 std::move(ws), model_path, auth_manager,
                 whisper_beam_size, whisper_threads, whisper_initial_prompt,
                 session_timeout_sec, mqtt_publisher
             );
-            session->run();
+            session->run(req);
         } else {
+            boost::beast::http::read(socket, buffer, req);
+            
+            if (handle_http_request(socket)) return;
+
             websocket::stream<tcp::socket> ws(std::move(socket));
             auto session = std::make_shared<StreamingSession<websocket::stream<tcp::socket>>>(
                 std::move(ws), model_path, auth_manager,
                 whisper_beam_size, whisper_threads, whisper_initial_prompt,
                 session_timeout_sec, mqtt_publisher
             );
-            session->run();
+            session->run(req);
         }
     } catch (std::exception& e) {
         Log::error("Session exception from " + client_ip + ": " + e.what());

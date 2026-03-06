@@ -68,7 +68,8 @@ public:
         beast::get_lowest_layer(ws_).cancel(ec);
     }
 
-    void run() {
+    template<class Req>
+    void run(const Req& req) {
         try {
             if (session_timeout_sec_ > 0) {
                 // Set native socket receive timeout to drop idle/zombie connections
@@ -84,7 +85,7 @@ public:
 #endif
             }
 
-            ws_.accept();
+            ws_.accept(req);
             Log::info("WebSocket handshake accepted", session_id_);
 
             while (true) {
