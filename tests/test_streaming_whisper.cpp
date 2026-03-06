@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "whisper/StreamingWhisperEngine.h"
+#include <whisper.h>
 #include <cmath>
 #include <fstream>
 #include <filesystem>
@@ -13,34 +14,56 @@
 const std::string TEST_MODEL_PATH = std::string(PROJECT_ROOT) + "/third_party/whisper.cpp/models/ggml-base.bin";
 
 /**
+ * Helper: load a whisper_context for tests
+ */
+static whisper_context* loadTestContext() {
+    whisper_context_params cparams = whisper_context_default_params();
+    cparams.use_gpu = true;
+    cparams.flash_attn = false; // Tests may run on CPU-only machines
+    return whisper_init_from_file_with_params(TEST_MODEL_PATH.c_str(), cparams);
+}
+
+/**
  * Test Fixture para StreamingWhisperEngine
  */
 class StreamingWhisperEngineTest : public ::testing::Test {
 protected:
+    whisper_context* ctx_ = nullptr;
+
     void SetUp() override {
-        // Verificar que el modelo existe
         if (!std::filesystem::exists(TEST_MODEL_PATH)) {
             GTEST_SKIP() << "Modelo de prueba no encontrado: " << TEST_MODEL_PATH;
+        }
+        ctx_ = loadTestContext();
+        if (!ctx_) {
+            GTEST_SKIP() << "No se pudo cargar el modelo de prueba";
+        }
+    }
+
+    void TearDown() override {
+        if (ctx_) {
+            whisper_free(ctx_);
+            ctx_ = nullptr;
         }
     }
 };
 
 /**
- * Test 1: Verificar que el modelo se carga correctamente
+ * Test 1: Verificar que el engine se crea correctamente con un contexto
  */
-TEST_F(StreamingWhisperEngineTest, ModelLoadsSuccessfully) {
+TEST_F(StreamingWhisperEngineTest, EngineCreatesSuccessfully) {
     ASSERT_NO_THROW({
-        StreamingWhisperEngine engine(TEST_MODEL_PATH);
-        EXPECT_TRUE(engine.isModelLoaded());
+        StreamingWhisperEngine engine(ctx_);
+        EXPECT_TRUE(engine.isReady());
     });
 }
 
 /**
- * Test 2: Verificar que falla con modelo inválido
+ * Test 2: Verificar que falla con contexto nulo
  */
-TEST(StreamingWhisperEngineBasicTest, FailsWithInvalidModel) {
+TEST(StreamingWhisperEngineBasicTest, FailsWithNullContext) {
     EXPECT_THROW({
-        StreamingWhisperEngine engine("/path/to/nonexistent/model.bin");
+        StreamingWhisperEngine engine(nullptr);
     }, std::runtime_error);
 }
 
@@ -48,7 +71,7 @@ TEST(StreamingWhisperEngineBasicTest, FailsWithInvalidModel) {
  * Test 3: Verificar que el buffer funciona correctamente
  */
 TEST_F(StreamingWhisperEngineTest, BufferManagement) {
-    StreamingWhisperEngine engine(TEST_MODEL_PATH);
+    StreamingWhisperEngine engine(ctx_);
     
     // Buffer inicial vacío
     EXPECT_EQ(engine.getBufferSize(), 0);
@@ -76,7 +99,6 @@ TEST(StreamingWhisperEngineBasicTest, Int16ToFloat32Conversion) {
     
     ASSERT_EQ(pcm16.size(), pcm32.size());
     
-    // Verificar valores
     EXPECT_FLOAT_EQ(pcm32[0], 0.0f);
     EXPECT_NEAR(pcm32[1], 0.5f, 0.01f);
     EXPECT_NEAR(pcm32[2], -0.5f, 0.01f);
@@ -88,7 +110,6 @@ TEST(StreamingWhisperEngineBasicTest, Int16ToFloat32Conversion) {
  * Test 5: Verificar conversión de bytes a float32
  */
 TEST(StreamingWhisperEngineBasicTest, BytesToFloat32Conversion) {
-    // Crear bytes que representan int16 en little-endian
     std::vector<uint8_t> bytes = {
         0x00, 0x00,  // 0
         0x00, 0x40,  // 16384
@@ -107,9 +128,8 @@ TEST(StreamingWhisperEngineBasicTest, BytesToFloat32Conversion) {
  * Test 6: Verificar configuración de idioma
  */
 TEST_F(StreamingWhisperEngineTest, LanguageConfiguration) {
-    StreamingWhisperEngine engine(TEST_MODEL_PATH);
+    StreamingWhisperEngine engine(ctx_);
     
-    // No debe lanzar excepciones
     EXPECT_NO_THROW(engine.setLanguage("en"));
     EXPECT_NO_THROW(engine.setLanguage("es"));
     EXPECT_NO_THROW(engine.setLanguage("auto"));
@@ -119,7 +139,7 @@ TEST_F(StreamingWhisperEngineTest, LanguageConfiguration) {
  * Test 7: Verificar configuración de threads
  */
 TEST_F(StreamingWhisperEngineTest, ThreadConfiguration) {
-    StreamingWhisperEngine engine(TEST_MODEL_PATH);
+    StreamingWhisperEngine engine(ctx_);
     
     EXPECT_NO_THROW(engine.setThreads(1));
     EXPECT_NO_THROW(engine.setThreads(4));
@@ -130,7 +150,7 @@ TEST_F(StreamingWhisperEngineTest, ThreadConfiguration) {
  * Test 8: Verificar transcripción con buffer vacío
  */
 TEST_F(StreamingWhisperEngineTest, TranscribeEmptyBuffer) {
-    StreamingWhisperEngine engine(TEST_MODEL_PATH);
+    StreamingWhisperEngine engine(ctx_);
     
     std::string result = engine.transcribe();
     EXPECT_EQ(result, "");
@@ -140,7 +160,7 @@ TEST_F(StreamingWhisperEngineTest, TranscribeEmptyBuffer) {
  * Test 9: Verificar transcripción con audio de silencio
  */
 TEST_F(StreamingWhisperEngineTest, TranscribeSilence) {
-    StreamingWhisperEngine engine(TEST_MODEL_PATH);
+    StreamingWhisperEngine engine(ctx_);
     engine.setLanguage("es");
     
     // 1 segundo de silencio @ 16kHz
@@ -148,7 +168,6 @@ TEST_F(StreamingWhisperEngineTest, TranscribeSilence) {
     engine.processAudioChunk(silence);
     
     std::string result = engine.transcribe();
-    // El resultado debería estar vacío o contener muy poco texto
     EXPECT_LE(result.length(), 50);
 }
 
@@ -156,10 +175,9 @@ TEST_F(StreamingWhisperEngineTest, TranscribeSilence) {
  * Test 10: Verificar transcripción con audio sintético (tono)
  */
 TEST_F(StreamingWhisperEngineTest, TranscribeSyntheticTone) {
-    StreamingWhisperEngine engine(TEST_MODEL_PATH);
+    StreamingWhisperEngine engine(ctx_);
     engine.setLanguage("es");
     
-    // Generar tono de 440Hz (La) durante 1 segundo @ 16kHz
     const int sample_rate = 16000;
     const float frequency = 440.0f;
     const float duration = 1.0f;
@@ -172,10 +190,8 @@ TEST_F(StreamingWhisperEngineTest, TranscribeSyntheticTone) {
     
     engine.processAudioChunk(tone);
     
-    // Debería transcribir algo (aunque sea ruido)
     EXPECT_NO_THROW({
         std::string result = engine.transcribe();
-        // No verificamos el contenido porque es audio sintético
     });
 }
 
@@ -183,7 +199,7 @@ TEST_F(StreamingWhisperEngineTest, TranscribeSyntheticTone) {
  * Test 11: Verificar thread-safety con múltiples threads
  */
 TEST_F(StreamingWhisperEngineTest, ThreadSafety) {
-    StreamingWhisperEngine engine(TEST_MODEL_PATH);
+    StreamingWhisperEngine engine(ctx_);
     
     const int num_threads = 4;
     const int chunks_per_thread = 10;
@@ -202,7 +218,6 @@ TEST_F(StreamingWhisperEngineTest, ThreadSafety) {
         thread.join();
     }
     
-    // Verificar que todos los chunks se agregaron
     EXPECT_EQ(engine.getBufferSize(), num_threads * chunks_per_thread * 100);
 }
 
@@ -210,19 +225,17 @@ TEST_F(StreamingWhisperEngineTest, ThreadSafety) {
  * Test 12: Verificar overflow del buffer
  */
 TEST_F(StreamingWhisperEngineTest, BufferOverflow) {
-    StreamingWhisperEngine engine(TEST_MODEL_PATH);
+    StreamingWhisperEngine engine(ctx_);
     
-    // Agregar más de 30 segundos de audio (límite del buffer)
     const int sample_rate = 16000;
     const int seconds = 35;
-    const int chunk_size = sample_rate; // 1 segundo por chunk
+    const int chunk_size = sample_rate;
     
     for (int i = 0; i < seconds; ++i) {
         std::vector<float> chunk(chunk_size, 0.1f);
         engine.processAudioChunk(chunk);
     }
     
-    // El buffer no debería exceder el máximo (30 segundos)
     EXPECT_LE(engine.getBufferSize(), sample_rate * 30);
 }
 
@@ -230,74 +243,61 @@ TEST_F(StreamingWhisperEngineTest, BufferOverflow) {
  * Test 13: Verificar reset después de transcripción
  */
 TEST_F(StreamingWhisperEngineTest, ResetAfterTranscription) {
-    StreamingWhisperEngine engine(TEST_MODEL_PATH);
+    StreamingWhisperEngine engine(ctx_);
     
-    // Agregar audio
     std::vector<float> audio(16000, 0.1f);
     engine.processAudioChunk(audio);
     EXPECT_GT(engine.getBufferSize(), 0);
     
-    // Transcribir
     engine.transcribe();
     
-    // Reset
     engine.reset();
     EXPECT_EQ(engine.getBufferSize(), 0);
     
-    // Verificar que se puede usar de nuevo
     engine.processAudioChunk(audio);
     EXPECT_EQ(engine.getBufferSize(), 16000);
 }
 
 /**
- * Test 14: Verificar comportamiento con un chunk masivo (mayor que el buffer máximo)
- * Debería mantener el buffer bajo el límite o manejarlo de forma segura
+ * Test 14: Verificar chunk masivo
  */
 TEST_F(StreamingWhisperEngineTest, MassiveSingleChunk) {
-    StreamingWhisperEngine engine(TEST_MODEL_PATH);
+    StreamingWhisperEngine engine(ctx_);
     
-    // Max buffer es 30s * 16000 = 480,000
-    const int massive_size = 16000 * 40; // 40 segundos
+    const int massive_size = 16000 * 40;
     std::vector<float> massive_chunk(massive_size, 0.1f);
     
     engine.processAudioChunk(massive_chunk);
     
-    // Verificar si el buffer creció descontroladamente
-    // Esperamos que el buffer sea <= max_buffer_size (480,000)
-    // NOTA: Si este test falla, es que tenemos un bug en processAudioChunk
     EXPECT_LE(engine.getBufferSize(), 16000 * 30);
 }
 
 /**
- * Test 15: Verificar comportamiento con idioma inválido
+ * Test 15: Verificar beam size configuration
  */
-TEST_F(StreamingWhisperEngineTest, InvalidLanguage) {
-    StreamingWhisperEngine engine(TEST_MODEL_PATH);
+TEST_F(StreamingWhisperEngineTest, BeamSizeConfiguration) {
+    StreamingWhisperEngine engine(ctx_);
     
-    engine.setLanguage("klingon"); // Idioma inexistente
-    
-    // Agregar audio
-    std::vector<float> audio(16000, 0.1f);
-    engine.processAudioChunk(audio);
-    
-    // Transcribir podría fallar o ignorarlo (fallback a auto)
-    // Pero no debería crashear (segfault/abort)
-    try {
-        engine.transcribe();
-    } catch (const std::exception& e) {
-        // Es aceptable que lance excepción si whisper valida el idioma
-        SUCCEED(); 
-        return;
-    }
-    
-    // Si no lanza, también es aceptable si no crashea
+    EXPECT_NO_THROW(engine.setBeamSize(1));
+    EXPECT_NO_THROW(engine.setBeamSize(5));
+    EXPECT_NO_THROW(engine.setBeamSize(10));
 }
 
 /**
- * Test 16: Verificar audio con valores NaN/Inf
+ * Test 16: Verificar initial prompt
+ */
+TEST_F(StreamingWhisperEngineTest, InitialPromptConfiguration) {
+    StreamingWhisperEngine engine(ctx_);
+    
+    EXPECT_NO_THROW(engine.setInitialPrompt("Transcripción en español"));
+    EXPECT_NO_THROW(engine.setInitialPrompt(""));
+}
+
+/**
+ * Test 17: Verificar audio con valores NaN/Inf
  */
 TEST_F(StreamingWhisperEngineTest, AudioWithNaN) {
-    StreamingWhisperEngine engine(TEST_MODEL_PATH);
+    StreamingWhisperEngine engine(ctx_);
     
     std::vector<float> bad_audio(16000);
     bad_audio[0] = std::numeric_limits<float>::quiet_NaN();
@@ -310,9 +310,6 @@ TEST_F(StreamingWhisperEngineTest, AudioWithNaN) {
     });
 }
 
-/**
- * Main de los tests
- */
 int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();

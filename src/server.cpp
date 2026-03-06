@@ -17,6 +17,9 @@
 #include "server/ConnectionGuard.h"
 #include "server/AuthManager.h"
 #include "auth/ApiAuthConfig.h"
+#include "mqtt/MQTTPublisher.h"
+#include "whisper/ModelCache.h"
+#include "log/Log.h"
 
 using tcp = boost::asio::ip::tcp;
 namespace websocket = boost::beast::websocket;
@@ -26,27 +29,19 @@ namespace {
 
 // ---------------------------------------------------------------------------
 // .env loader
-// Reads KEY=VALUE lines from `path` and sets them in the process environment
-// without overwriting variables that are already set.
-// Supports:
-//   - Blank lines and lines starting with '#' are ignored.
-//   - Optional surrounding quotes on the value: KEY="value" or KEY='value'.
-//   - Inline comments after an unquoted value are NOT stripped (keep it simple).
 // ---------------------------------------------------------------------------
 void loadDotEnv(const std::string& path) {
     std::ifstream file(path);
     if (!file.is_open()) {
-        return; // No .env file — that's fine
+        return;
     }
 
     std::string line;
     while (std::getline(file, line)) {
-        // Strip trailing \r
         if (!line.empty() && line.back() == '\r') {
             line.pop_back();
         }
 
-        // Skip blank lines and comments
         if (line.empty() || line[0] == '#') {
             continue;
         }
@@ -59,7 +54,6 @@ void loadDotEnv(const std::string& path) {
         std::string key   = line.substr(0, eq);
         std::string value = line.substr(eq + 1);
 
-        // Strip surrounding quotes (" or ')
         if (value.size() >= 2) {
             char q = value.front();
             if ((q == '"' || q == '\'') && value.back() == q) {
@@ -67,21 +61,17 @@ void loadDotEnv(const std::string& path) {
             }
         }
 
-        // Only set if not already defined in the environment
         if (!key.empty() && ::getenv(key.c_str()) == nullptr) {
             ::setenv(key.c_str(), value.c_str(), 0);
         }
     }
 }
 
-// Helper: returns getenv(var) or "" if not set.
 std::string env(const char* var) {
     const char* v = ::getenv(var);
     return v ? std::string(v) : std::string{};
 }
 
-// Build a ServerConfig from environment variables (used as defaults before
-// CLI parsing overrides them).
 ServerConfig configFromEnv() {
     ServerConfig cfg;
 
@@ -118,6 +108,28 @@ ServerConfig configFromEnv() {
     if (auto v = env("MAX_CONNECTIONS_PER_IP"); !v.empty())
         cfg.max_connections_per_ip = static_cast<size_t>(std::stoul(v));
 
+    if (auto v = env("MQTT_URL"); !v.empty())
+        cfg.mqtt_url = v;
+
+    if (auto v = env("MQTT_TOPIC"); !v.empty())
+        cfg.mqtt_topic = v;
+
+    if (auto v = env("MQTT_CLIENT_ID"); !v.empty())
+        cfg.mqtt_client_id = v;
+
+    // Whisper quality params
+    if (auto v = env("WHISPER_BEAM_SIZE"); !v.empty())
+        cfg.whisper_beam_size = std::stoi(v);
+
+    if (auto v = env("WHISPER_THREADS"); !v.empty())
+        cfg.whisper_threads = std::stoi(v);
+
+    if (auto v = env("MODEL_CACHE_TTL"); !v.empty())
+        cfg.model_cache_ttl = std::stoi(v);
+
+    if (auto v = env("WHISPER_INITIAL_PROMPT"); !v.empty())
+        cfg.whisper_initial_prompt = v;
+
     return cfg;
 }
 
@@ -130,15 +142,19 @@ void printUsage(const char* binary) {
               << " [--auth-cache-ttl N] [--auth-api-timeout N]"
               << " [--cert cert.pem] [--key key.pem]"
               << " [--max-connections N] [--max-connections-per-ip N]"
+              << " [--mqtt-url URL] [--mqtt-topic TOPIC]"
+              << " [--whisper-beam-size N] [--whisper-threads N]"
+              << " [--model-cache-ttl N] [--whisper-initial-prompt TEXT]"
               << " [--env-file path]" << std::endl;
     std::cout << "All options can also be set via environment variables (or a .env file):" << std::endl;
     std::cout << "  MODEL_PATH, BIND_ADDRESS, PORT," << std::endl;
     std::cout << "  AUTH_API_URL, AUTH_API_SECRET, AUTH_CACHE_TTL, AUTH_API_TIMEOUT," << std::endl;
-    std::cout << "  TLS_CERT, TLS_KEY, MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP" << std::endl;
+    std::cout << "  TLS_CERT, TLS_KEY, MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP," << std::endl;
+    std::cout << "  MQTT_URL, MQTT_TOPIC, MQTT_CLIENT_ID," << std::endl;
+    std::cout << "  WHISPER_BEAM_SIZE, WHISPER_THREADS, MODEL_CACHE_TTL, WHISPER_INITIAL_PROMPT" << std::endl;
     std::cout << "CLI arguments override environment variables." << std::endl;
 }
 
-// First pass: extract --env-file if present, load it, then build full config.
 std::string extractEnvFile(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -146,11 +162,10 @@ std::string extractEnvFile(int argc, char* argv[]) {
             return argv[i + 1];
         }
     }
-    return ".env"; // default
+    return ".env";
 }
 
 ServerConfig parseArgs(int argc, char* argv[]) {
-    // Start with env-based defaults
     ServerConfig config = configFromEnv();
 
     for (int i = 1; i < argc; ++i) {
@@ -160,7 +175,7 @@ ServerConfig parseArgs(int argc, char* argv[]) {
             printUsage(argv[0]);
             std::exit(0);
         } else if (arg == "--env-file" && i + 1 < argc) {
-            ++i; // already handled before parseArgs
+            ++i;
         } else if (arg == "--model" && i + 1 < argc) {
             config.model_path = argv[++i];
         } else if (arg == "--bind" && i + 1 < argc) {
@@ -183,13 +198,25 @@ ServerConfig parseArgs(int argc, char* argv[]) {
             config.max_connections = static_cast<size_t>(std::stoul(argv[++i]));
         } else if (arg == "--max-connections-per-ip" && i + 1 < argc) {
             config.max_connections_per_ip = static_cast<size_t>(std::stoul(argv[++i]));
+        } else if (arg == "--mqtt-url" && i + 1 < argc) {
+            config.mqtt_url = argv[++i];
+        } else if (arg == "--mqtt-topic" && i + 1 < argc) {
+            config.mqtt_topic = argv[++i];
+        } else if (arg == "--whisper-beam-size" && i + 1 < argc) {
+            config.whisper_beam_size = std::stoi(argv[++i]);
+        } else if (arg == "--whisper-threads" && i + 1 < argc) {
+            config.whisper_threads = std::stoi(argv[++i]);
+        } else if (arg == "--model-cache-ttl" && i + 1 < argc) {
+            config.model_cache_ttl = std::stoi(argv[++i]);
+        } else if (arg == "--whisper-initial-prompt" && i + 1 < argc) {
+            config.whisper_initial_prompt = argv[++i];
         } else if (arg == "--thread-safe") {
             // accepted for backwards compatibility
         } else if (arg.rfind("--", 0) != 0 &&
                    config.model_path == "third_party/whisper.cpp/models/ggml-base.bin") {
             config.model_path = arg;
         } else {
-            std::cerr << "Unknown argument: " << arg << std::endl;
+            Log::error("Unknown argument: " + arg);
             printUsage(argv[0]);
             std::exit(1);
         }
@@ -203,7 +230,11 @@ void handleSession(tcp::socket socket,
                    const std::string& client_ip,
                    const std::string& model_path,
                    const std::shared_ptr<AuthManager>& auth_manager,
-                   std::shared_ptr<ssl::context> ssl_ctx) {
+                   int whisper_beam_size,
+                   int whisper_threads,
+                   const std::string& whisper_initial_prompt,
+                   std::shared_ptr<ssl::context> ssl_ctx,
+                   std::shared_ptr<MQTTPublisher> mqtt_publisher) {
     ConnectionGuard guard(limiter, client_ip);
 
     try {
@@ -211,18 +242,22 @@ void handleSession(tcp::socket socket,
             websocket::stream<ssl::stream<tcp::socket>> ws(std::move(socket), *ssl_ctx);
             ws.next_layer().handshake(ssl::stream_base::server);
             auto session = std::make_shared<StreamingSession<websocket::stream<ssl::stream<tcp::socket>>>>(
-                std::move(ws), model_path, auth_manager
+                std::move(ws), model_path, auth_manager,
+                whisper_beam_size, whisper_threads, whisper_initial_prompt,
+                mqtt_publisher
             );
             session->run();
         } else {
             websocket::stream<tcp::socket> ws(std::move(socket));
             auto session = std::make_shared<StreamingSession<websocket::stream<tcp::socket>>>(
-                std::move(ws), model_path, auth_manager
+                std::move(ws), model_path, auth_manager,
+                whisper_beam_size, whisper_threads, whisper_initial_prompt,
+                mqtt_publisher
             );
             session->run();
         }
     } catch (std::exception& e) {
-        std::cerr << "Session error (" << client_ip << "): " << e.what() << std::endl;
+        Log::error("Session exception from " + client_ip + ": " + e.what());
     }
 }
 
@@ -230,28 +265,37 @@ void handleSession(tcp::socket socket,
 
 int main(int argc, char* argv[]) {
     try {
-        // Load .env before anything else (CLI --env-file overrides the default path)
         loadDotEnv(extractEnvFile(argc, argv));
 
         ServerConfig config = parseArgs(argc, argv);
 
-        std::cout << "🎙️  Streaming Transcription Server" << std::endl;
-        std::cout << "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" << std::endl;
-        std::cout << "Model: " << config.model_path << std::endl;
-        std::cout << "Bind:  " << config.bind_address << ":" << config.port << std::endl;
+        std::cout << "Streaming Transcription Server\n";
+        std::cout << "──────────────────────────────\n";
 
-        bool use_ssl = !config.cert_path.empty() && !config.key_path.empty();
-        std::cout << "SSL:   " << (use_ssl ? "Enabled" : "Disabled") << std::endl;
-
+        bool use_ssl    = !config.cert_path.empty() && !config.key_path.empty();
         bool auth_enabled = !config.auth_api_url.empty();
-        std::cout << "Auth:  " << (auth_enabled ? "API (" + config.auth_api_url + ")" : "disabled") << std::endl;
+
+        Log::info("Model:   " + config.model_path);
+        Log::info("Bind:    " + config.bind_address + ":" + std::to_string(config.port));
+        Log::info("SSL:     " + std::string(use_ssl ? "enabled" : "disabled"));
         if (auth_enabled) {
-            std::cout << "       Cache TTL: " << config.auth_cache_ttl << "s"
-                      << "  Timeout: " << config.auth_api_timeout << "s" << std::endl;
+            Log::info("Auth:    API " + config.auth_api_url +
+                      "  cache=" + std::to_string(config.auth_cache_ttl) + "s" +
+                      "  timeout=" + std::to_string(config.auth_api_timeout) + "s");
+        } else {
+            Log::info("Auth:    disabled");
         }
-        std::cout << "Max:   " << config.max_connections << " total, "
-                  << config.max_connections_per_ip << " per IP" << std::endl;
-        std::cout << "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" << std::endl;
+        Log::info("Limits:  " + std::to_string(config.max_connections) + " total, " +
+                  std::to_string(config.max_connections_per_ip) + " per IP");
+        Log::info("Whisper: beam_size=" + std::to_string(config.whisper_beam_size) +
+                  "  threads=" + std::to_string(config.whisper_threads) +
+                  "  model_cache_ttl=" + std::to_string(config.model_cache_ttl) + "s");
+        if (!config.whisper_initial_prompt.empty()) {
+            Log::info("Whisper: initial_prompt=\"" + config.whisper_initial_prompt + "\"");
+        }
+
+        // Configure the model cache TTL
+        ModelCache::instance().configure(config.model_cache_ttl);
 
         std::shared_ptr<ssl::context> ssl_ctx;
         if (use_ssl) {
@@ -259,8 +303,9 @@ int main(int argc, char* argv[]) {
                 ssl_ctx = std::make_shared<ssl::context>(ssl::context::tlsv12);
                 ssl_ctx->use_certificate_chain_file(config.cert_path);
                 ssl_ctx->use_private_key_file(config.key_path, ssl::context::pem);
+                Log::info("SSL context loaded (cert=" + config.cert_path + ")");
             } catch (std::exception& e) {
-                std::cerr << "❌ SSL Init Error: " << e.what() << std::endl;
+                Log::error(std::string("SSL init failed: ") + e.what());
                 return 1;
             }
         }
@@ -281,9 +326,22 @@ int main(int argc, char* argv[]) {
         auth_config.timeout_seconds   = config.auth_api_timeout;
         auto auth_manager = std::make_shared<AuthManager>(auth_config);
 
-        std::string protocol = use_ssl ? "wss" : "ws";
-        std::cout << "\n🚀 Server listening on " << protocol << "://" << config.bind_address << ":" << config.port << std::endl;
-        std::cout << "Waiting for connections...\n" << std::endl;
+        std::shared_ptr<MQTTPublisher> mqtt_publisher;
+        if (!config.mqtt_url.empty()) {
+            auto mqtt_cfg = MQTTConfig::fromUrl(config.mqtt_url, config.mqtt_topic, config.mqtt_client_id);
+            mqtt_publisher = std::make_shared<MQTTPublisher>(mqtt_cfg);
+            if (mqtt_publisher->connect()) {
+                Log::info("MQTT: connecting to " + config.mqtt_url + " topic=" + config.mqtt_topic);
+            } else {
+                Log::warn("MQTT: connect() failed, publishing disabled");
+                mqtt_publisher.reset();
+            }
+        } else {
+            Log::info("MQTT: disabled");
+        }
+
+        Log::info("Listening on " + std::string(use_ssl ? "wss" : "ws") +
+                  "://" + config.bind_address + ":" + std::to_string(config.port));
 
         while (true) {
             tcp::socket socket(ioc);
@@ -292,12 +350,12 @@ int main(int argc, char* argv[]) {
             std::string client_ip = socket.remote_endpoint().address().to_string();
 
             if (!limiter->tryAcquire(client_ip)) {
-                std::cerr << "✗ Connection rejected (limits): " << client_ip << std::endl;
+                Log::warn("Connection rejected (limit reached): " + client_ip);
                 socket.close();
                 continue;
             }
 
-            std::cout << "✓ New connection accepted from " << client_ip << std::endl;
+            Log::info("New connection from " + client_ip);
 
             try {
                 std::thread(handleSession,
@@ -306,14 +364,18 @@ int main(int argc, char* argv[]) {
                             client_ip,
                             config.model_path,
                             auth_manager,
-                            ssl_ctx).detach();
+                            config.whisper_beam_size,
+                            config.whisper_threads,
+                            config.whisper_initial_prompt,
+                            ssl_ctx,
+                            mqtt_publisher).detach();
             } catch (...) {
                 limiter->release(client_ip);
                 throw;
             }
         }
     } catch (std::exception& e) {
-        std::cerr << "❌ Server error: " << e.what() << std::endl;
+        Log::error(std::string("Fatal server error: ") + e.what());
         return 1;
     }
 
