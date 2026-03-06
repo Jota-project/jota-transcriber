@@ -19,6 +19,7 @@
 #include "auth/ApiAuthConfig.h"
 #include "mqtt/MQTTPublisher.h"
 #include "whisper/ModelCache.h"
+#include "whisper/InferenceLimiter.h"
 #include "log/Log.h"
 
 using tcp = boost::asio::ip::tcp;
@@ -124,6 +125,9 @@ ServerConfig configFromEnv() {
     if (auto v = env("WHISPER_THREADS"); !v.empty())
         cfg.whisper_threads = std::stoi(v);
 
+    if (auto v = env("MAX_CONCURRENT_INFERENCE"); !v.empty())
+        cfg.max_concurrent_inference = std::stoi(v);
+
     if (auto v = env("MODEL_CACHE_TTL"); !v.empty())
         cfg.model_cache_ttl = std::stoi(v);
 
@@ -144,14 +148,15 @@ void printUsage(const char* binary) {
               << " [--max-connections N] [--max-connections-per-ip N]"
               << " [--mqtt-url URL] [--mqtt-topic TOPIC]"
               << " [--whisper-beam-size N] [--whisper-threads N]"
-              << " [--model-cache-ttl N] [--whisper-initial-prompt TEXT]"
-              << " [--env-file path]" << std::endl;
+              << " [--max-concurrent-inference N] [--model-cache-ttl N]"
+              << " [--whisper-initial-prompt TEXT] [--env-file path]" << std::endl;
     std::cout << "All options can also be set via environment variables (or a .env file):" << std::endl;
     std::cout << "  MODEL_PATH, BIND_ADDRESS, PORT," << std::endl;
     std::cout << "  AUTH_API_URL, AUTH_API_SECRET, AUTH_CACHE_TTL, AUTH_API_TIMEOUT," << std::endl;
     std::cout << "  TLS_CERT, TLS_KEY, MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP," << std::endl;
     std::cout << "  MQTT_URL, MQTT_TOPIC, MQTT_CLIENT_ID," << std::endl;
-    std::cout << "  WHISPER_BEAM_SIZE, WHISPER_THREADS, MODEL_CACHE_TTL, WHISPER_INITIAL_PROMPT" << std::endl;
+    std::cout << "  WHISPER_BEAM_SIZE, WHISPER_THREADS, MAX_CONCURRENT_INFERENCE," << std::endl;
+    std::cout << "  MODEL_CACHE_TTL, WHISPER_INITIAL_PROMPT" << std::endl;
     std::cout << "CLI arguments override environment variables." << std::endl;
 }
 
@@ -206,6 +211,8 @@ ServerConfig parseArgs(int argc, char* argv[]) {
             config.whisper_beam_size = std::stoi(argv[++i]);
         } else if (arg == "--whisper-threads" && i + 1 < argc) {
             config.whisper_threads = std::stoi(argv[++i]);
+        } else if (arg == "--max-concurrent-inference" && i + 1 < argc) {
+            config.max_concurrent_inference = std::stoi(argv[++i]);
         } else if (arg == "--model-cache-ttl" && i + 1 < argc) {
             config.model_cache_ttl = std::stoi(argv[++i]);
         } else if (arg == "--whisper-initial-prompt" && i + 1 < argc) {
@@ -289,13 +296,15 @@ int main(int argc, char* argv[]) {
                   std::to_string(config.max_connections_per_ip) + " per IP");
         Log::info("Whisper: beam_size=" + std::to_string(config.whisper_beam_size) +
                   "  threads=" + std::to_string(config.whisper_threads) +
-                  "  model_cache_ttl=" + std::to_string(config.model_cache_ttl) + "s");
+                  "  max_concurrent=" + std::to_string(config.max_concurrent_inference) +
+                  "  cache_ttl=" + std::to_string(config.model_cache_ttl) + "s");
         if (!config.whisper_initial_prompt.empty()) {
             Log::info("Whisper: initial_prompt=\"" + config.whisper_initial_prompt + "\"");
         }
 
-        // Configure the model cache TTL
+        // Configure the model cache and inference limiter
         ModelCache::instance().configure(config.model_cache_ttl);
+        InferenceLimiter::instance().setMaxConcurrency(config.max_concurrent_inference);
 
         std::shared_ptr<ssl::context> ssl_ctx;
         if (use_ssl) {

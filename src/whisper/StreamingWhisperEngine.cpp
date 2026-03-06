@@ -3,6 +3,9 @@
 #include <stdexcept>
 #include <cstring>
 #include <iostream>
+#include <cmath>
+#include <algorithm>
+#include "InferenceLimiter.h"
 
 StreamingWhisperEngine::StreamingWhisperEngine(whisper_context* shared_ctx)
     : ctx_(shared_ctx),
@@ -40,21 +43,51 @@ StreamingWhisperEngine::~StreamingWhisperEngine() {
 void StreamingWhisperEngine::processAudioChunk(const std::vector<float>& pcm_data) {
     std::lock_guard<std::mutex> lock(buffer_mutex_);
     
-    size_t new_total_size = audio_buffer_.size() + pcm_data.size();
+    // Low-pass/High-pass filter variables (IIR)
+    // Filter out < 80Hz rumble (alpha ~ 0.97 at 16kHz)
+    const float alpha = 0.969f;
+    static float prev_raw = 0.0f;
+    static float prev_filtered = 0.0f;
+    
+    // Apply High-pass filter, track peak for normalization
+    float peak = 0.0f;
+    std::vector<float> prepped_data = pcm_data; // copy
+    for (size_t i = 0; i < prepped_data.size(); ++i) {
+        // High pass filter
+        float raw = prepped_data[i];
+        float filtered = alpha * (prev_filtered + raw - prev_raw);
+        prev_raw = raw;
+        prev_filtered = filtered;
+        
+        prepped_data[i] = filtered;
+        peak = std::max(peak, std::abs(filtered));
+    }
+    
+    // Fast Peak Normalization ~ 0.9 if it's too quiet, but only if there is *some* signal
+    if (peak > 0.0001f && peak < 0.9f) {
+        float gain = 0.9f / peak;
+        // Don't boost static too much
+        gain = std::min(gain, 10.0f);
+        for (float& sample : prepped_data) {
+            sample *= gain;
+        }
+    }
+
+    size_t new_total_size = audio_buffer_.size() + prepped_data.size();
     
     if (new_total_size > static_cast<size_t>(max_buffer_samples_)) {
-        if (pcm_data.size() >= static_cast<size_t>(max_buffer_samples_)) {
+        if (prepped_data.size() >= static_cast<size_t>(max_buffer_samples_)) {
             audio_buffer_.clear();
             audio_buffer_.insert(audio_buffer_.end(), 
-                               pcm_data.end() - max_buffer_samples_, 
-                               pcm_data.end());
+                               prepped_data.end() - max_buffer_samples_, 
+                               prepped_data.end());
         } else {
             size_t to_discard = new_total_size - max_buffer_samples_;
             audio_buffer_.erase(audio_buffer_.begin(), audio_buffer_.begin() + to_discard);
-            audio_buffer_.insert(audio_buffer_.end(), pcm_data.begin(), pcm_data.end());
+            audio_buffer_.insert(audio_buffer_.end(), prepped_data.begin(), prepped_data.end());
         }
     } else {
-        audio_buffer_.insert(audio_buffer_.end(), pcm_data.begin(), pcm_data.end());
+        audio_buffer_.insert(audio_buffer_.end(), prepped_data.begin(), prepped_data.end());
     }
 }
 
@@ -107,11 +140,17 @@ std::string StreamingWhisperEngine::transcribe(size_t start_offset) {
     const float* data_ptr = audio_buffer_.data() + start_offset;
     int data_size = static_cast<int>(audio_buffer_.size() - start_offset);
     
-    int result = whisper_full_with_state(
-        ctx_, state_, params,
-        data_ptr,
-        data_size
-    );
+    int result = -1;
+    {
+        // Global Concurrency Limit: blocks if too many inferences are running
+        InferenceLimiter::Guard limit_guard;
+        
+        result = whisper_full_with_state(
+            ctx_, state_, params,
+            data_ptr,
+            data_size
+        );
+    }
     
     if (result != 0) {
         throw std::runtime_error("Whisper transcription failed with code: " + std::to_string(result));
