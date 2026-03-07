@@ -38,12 +38,20 @@ public:
      */
     void processAudioChunk(const std::vector<float>& pcm_data);
     
+    
+    struct TranscribeResult {
+        std::string partial_text;
+        std::string committed_text;
+    };
+
     /**
-     * @brief Transcribir todo o una parte del buffer
-     * @param start_offset Offset en samples desde donde transcribir (0 = todo)
-     * @return Texto transcrito
-     * @throws std::runtime_error si la transcripción falla
+     * @brief Interpreta el audio y recorta los segmentos completados de forma segura
+     * @param force_commit Si es true, vuelca todo el texto a committed y vacía el buffer
+     * @return `TranscribeResult` con el texto estable (commited) y el texto en vuelo (partial)
      */
+    TranscribeResult transcribeSlidingWindow(bool force_commit = false);
+
+    // Mantenemos transcribe por compatibilidad con tests (equivale a transcribeSlidingWindow(true).committed_text)
     std::string transcribe(size_t start_offset = 0);
     
     /**
@@ -116,4 +124,8 @@ private:
     int beam_size_;
     float vad_thold_;
     int max_buffer_samples_; // Max samples in buffer (30s @ 16kHz)
+
+    // High-pass filter state (per-instance, not static)
+    float hp_prev_raw_      = 0.0f;
+    float hp_prev_filtered_ = 0.0f;
 };

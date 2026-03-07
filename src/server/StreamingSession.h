@@ -186,39 +186,23 @@ private:
 
         size_t current_size = engine_->getBufferSize();
         
-        // Triggers roughly every 1 second of new audio (16kHz)
-        const size_t MIN_NEW_SAMPLES = 16000; 
-        // Sliding window size: e.g. 5 seconds (16000 * 5)
-        const size_t WINDOW_SIZE = 16000 * 5;
+        // Triggers every 250ms of new audio (16kHz)
+        const size_t MIN_NEW_SAMPLES = 4000; 
 
-        if (current_size >= MIN_NEW_SAMPLES &&
-            (current_size - last_transcribed_size_ >= MIN_NEW_SAMPLES)) {
-
-            last_transcribed_size_ = current_size;
+        if (current_size - last_transcribed_size_ >= MIN_NEW_SAMPLES) {
             
-            // To prevent O(n^2), we only transcribe from an offset, looking roughly at the last WINDOW_SIZE
-            // We use overlapping to avoid clipping words
-            if (current_size > WINDOW_SIZE + transcription_offset_) {
-                // We've accumulated enough beyond the window.
-                // Transcribe the finalized window exactly.
-                std::string finalized_text = engine_->transcribe(transcription_offset_);
-                full_transcription_ += finalized_text;
-                
-                // Shift the offset forward, leaving ~1.5s overlapping context (16000 * 1.5) to avoid cutting words
-                size_t keep_samples = static_cast<size_t>(16000 * 1.5);
-                engine_->reset(keep_samples);
-                
-                // Now buffer is tiny again.
-                current_size = engine_->getBufferSize();
+            auto res = engine_->transcribeSlidingWindow(false);
+            
+            if (!res.committed_text.empty()) {
+                full_transcription_ += res.committed_text;
+                // Buffer shrank if we committed
+                last_transcribed_size_ = engine_->getBufferSize();
+            } else {
                 last_transcribed_size_ = current_size;
-                transcription_offset_ = 0;
             }
 
-            // Transcribe the working window
-            std::string partialText = engine_->transcribe(transcription_offset_);
-
-            if (!partialText.empty()) {
-                std::string merged_so_far = full_transcription_ + partialText;
+            if (!res.partial_text.empty() || !res.committed_text.empty()) {
+                std::string merged_so_far = full_transcription_ + res.partial_text;
                 json msg = {
                     {"type", "transcription"},
                     {"text", merged_so_far},
@@ -374,7 +358,6 @@ private:
 
                 configured_ = true;
                 last_transcribed_size_ = 0;
-                transcription_offset_  = 0;
                 full_transcription_    = "";
                 last_audio_time_ = std::chrono::steady_clock::now();
             }
@@ -397,12 +380,8 @@ private:
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             if (engine_) {
-                // Transcribe remaining buffer
-                std::string finalText = engine_->transcribe(transcription_offset_);
-                if (!finalText.empty()) {
-                    // If it's just the continuation, append it
-                    full_transcription_ += finalText;
-                }
+                auto res = engine_->transcribeSlidingWindow(true); // force commit
+                full_transcription_ += res.committed_text;
             }
         }
 
@@ -477,7 +456,6 @@ private:
     std::chrono::steady_clock::time_point last_audio_time_;
 
     // Sliding window logic
-    size_t transcription_offset_;
     std::string full_transcription_;
 
     void flushLoop() {
@@ -497,11 +475,19 @@ private:
             auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_audio_time_).count();
 
             size_t current_size = engine_->getBufferSize();
-            if (current_size > last_transcribed_size_ && elapsed_ms > 1000) {
-                // User stopped speaking for 1 second and there is fresh audio buffer
-                std::string partialText = engine_->transcribe(transcription_offset_);
-                if (!partialText.empty()) {
-                    std::string merged_so_far = full_transcription_ + partialText;
+            if (current_size > last_transcribed_size_ && elapsed_ms > 800) {
+                // User stopped speaking for 800ms and there is fresh audio buffer
+                auto res = engine_->transcribeSlidingWindow(false);
+                
+                if (!res.committed_text.empty()) {
+                    full_transcription_ += res.committed_text;
+                    last_transcribed_size_ = engine_->getBufferSize();
+                } else {
+                    last_transcribed_size_ = current_size;
+                }
+
+                if (!res.partial_text.empty() || !res.committed_text.empty()) {
+                    std::string merged_so_far = full_transcription_ + res.partial_text;
                     json msg = {
                         {"type", "transcription"},
                         {"text", merged_so_far},
@@ -512,7 +498,6 @@ private:
                     sendMessage(msg);
                     lock.lock();
                 }
-                last_transcribed_size_ = current_size;
             }
         }
     }

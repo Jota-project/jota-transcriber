@@ -43,22 +43,18 @@ StreamingWhisperEngine::~StreamingWhisperEngine() {
 void StreamingWhisperEngine::processAudioChunk(const std::vector<float>& pcm_data) {
     std::lock_guard<std::mutex> lock(buffer_mutex_);
     
-    // Low-pass/High-pass filter variables (IIR)
-    // Filter out < 80Hz rumble (alpha ~ 0.97 at 16kHz)
+    // High-pass filter to remove < 80Hz rumble (IIR, alpha ~ 0.97 at 16kHz)
+    // State is per-instance (hp_prev_raw_ / hp_prev_filtered_) — not static.
     const float alpha = 0.969f;
-    static float prev_raw = 0.0f;
-    static float prev_filtered = 0.0f;
-    
-    // Apply High-pass filter, track peak for normalization
+
     float peak = 0.0f;
-    std::vector<float> prepped_data = pcm_data; // copy
+    std::vector<float> prepped_data = pcm_data;
     for (size_t i = 0; i < prepped_data.size(); ++i) {
-        // High pass filter
-        float raw = prepped_data[i];
-        float filtered = alpha * (prev_filtered + raw - prev_raw);
-        prev_raw = raw;
-        prev_filtered = filtered;
-        
+        float raw      = prepped_data[i];
+        float filtered = alpha * (hp_prev_filtered_ + raw - hp_prev_raw_);
+        hp_prev_raw_      = raw;
+        hp_prev_filtered_ = filtered;
+
         prepped_data[i] = filtered;
         peak = std::max(peak, std::abs(filtered));
     }
@@ -91,64 +87,51 @@ void StreamingWhisperEngine::processAudioChunk(const std::vector<float>& pcm_dat
     }
 }
 
-std::string StreamingWhisperEngine::transcribe(size_t start_offset) {
+StreamingWhisperEngine::TranscribeResult StreamingWhisperEngine::transcribeSlidingWindow(bool force_commit) {
     std::lock_guard<std::mutex> lock(buffer_mutex_);
     
-    if (audio_buffer_.empty() || start_offset >= audio_buffer_.size()) {
-        return "";
+    TranscribeResult res;
+    if (audio_buffer_.empty()) {
+        return res;
     }
     
-    // Use beam search for better quality
-    whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_BEAM_SEARCH);
-    params.beam_search.beam_size = beam_size_;
+    whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
 
-    params.language        = language_.c_str();
-    params.n_threads       = n_threads_;
-    params.print_progress  = false;
+    params.language         = language_.c_str();
+    params.n_threads        = n_threads_;
+    params.print_progress   = false;
     params.print_timestamps = false;
-    params.print_realtime  = false;
-    params.print_special   = false;
-    params.translate       = false;
-    params.single_segment  = false;
+    params.print_realtime   = false;
+    params.print_special    = false;
+    params.translate        = false;
+    params.single_segment   = false;
 
-    // Quality tuning
-    params.no_context      = false;   // Use previous transcription context
-    params.suppress_blank  = true;    // Suppress blank tokens
-    params.suppress_nst    = true;    // Suppress non-speech tokens
+    params.no_context       = false; 
+    params.suppress_blank   = true;
+    params.suppress_nst     = true;
 
-    // Temperature: start deterministic, fall back with increment
-    params.temperature     = 0.0f;
-    params.temperature_inc = 0.2f;
-    params.entropy_thold   = 2.4f;
-    params.logprob_thold   = -1.0f;
-    params.no_speech_thold = 0.6f;
+    params.temperature      = 0.0f;
+    params.temperature_inc  = 0.0f;
 
-    // VAD
+    params.no_speech_thold  = 0.3f;
+    params.logprob_thold    = -1.0f;
+
     if (vad_thold_ > 0.0f) {
-        params.audio_ctx = 0; // Use default
-        // VAD parameters in whisper_full_params (whisper.cpp specific)
-        // Set no_speech threshold more strictly if VAD is manually requested
+        params.audio_ctx = 0; 
         params.no_speech_thold = vad_thold_;
     }
 
-    // Initial prompt for domain guidance
     if (!initial_prompt_.empty()) {
         params.initial_prompt = initial_prompt_.c_str();
     }
 
-    // Use per-session state for thread safety, only process from start_offset
-    const float* data_ptr = audio_buffer_.data() + start_offset;
-    int data_size = static_cast<int>(audio_buffer_.size() - start_offset);
-    
     int result = -1;
     {
-        // Global Concurrency Limit: blocks if too many inferences are running
         InferenceLimiter::Guard limit_guard;
-        
         result = whisper_full_with_state(
             ctx_, state_, params,
-            data_ptr,
-            data_size
+            audio_buffer_.data(),
+            audio_buffer_.size()
         );
     }
     
@@ -156,7 +139,6 @@ std::string StreamingWhisperEngine::transcribe(size_t start_offset) {
         throw std::runtime_error("Whisper transcription failed with code: " + std::to_string(result));
     }
     
-    // Auto-language caching
     if (language_ == "auto") {
         int id = whisper_full_lang_id_from_state(state_);
         const char* detected = whisper_lang_str(id);
@@ -166,18 +148,77 @@ std::string StreamingWhisperEngine::transcribe(size_t start_offset) {
         }
     }
     
-    // Extract transcribed text from state
-    std::string transcription;
     const int n_segments = whisper_full_n_segments_from_state(state_);
     
-    for (int i = 0; i < n_segments; ++i) {
-        const char* text = whisper_full_get_segment_text_from_state(state_, i);
-        if (text) {
-            transcription += text;
+    // We limit max window to ~10 seconds to keep inference time < 100ms
+    const size_t max_window_samples = 16000 * 10;
+    
+    if (force_commit || audio_buffer_.size() >= max_window_samples) {
+        int commit_up_to_segment = -1;
+        int64_t commit_t1 = 0;
+        
+        if (force_commit) {
+            commit_up_to_segment = n_segments - 1;
+        } else {
+            // Find the last segment that ends before the final 2 seconds of audio
+            // Whisper timestamps are in 10ms (100 = 1 sec).
+            int64_t overlap_bounds_t = (static_cast<int64_t>(audio_buffer_.size()) - 32000) / 160;
+            
+            for (int i = n_segments - 1; i >= 0; --i) {
+                int64_t t1 = whisper_full_get_segment_t1_from_state(state_, i);
+                if (t1 < overlap_bounds_t) {
+                    commit_up_to_segment = i;
+                    commit_t1 = t1;
+                    break;
+                }
+            }
+            
+            // If the user spoke a continuous 10s sentence without any punctuation break,
+            // we forcefully commit everything except the very last segment.
+            if (commit_up_to_segment == -1 && n_segments > 1) {
+                commit_up_to_segment = n_segments - 2;
+                commit_t1 = whisper_full_get_segment_t1_from_state(state_, commit_up_to_segment);
+            }
+        }
+        
+        if (commit_up_to_segment >= 0) {
+            for (int i = 0; i <= commit_up_to_segment; ++i) {
+                const char* text = whisper_full_get_segment_text_from_state(state_, i);
+                if (text) res.committed_text += text;
+            }
+            for (int i = commit_up_to_segment + 1; i < n_segments; ++i) {
+                const char* text = whisper_full_get_segment_text_from_state(state_, i);
+                if (text) res.partial_text += text;
+            }
+            
+            // Shift audio buffer, dropping the committed audio to prevent duplicate transcriptions
+            if (commit_t1 > 0) {
+                size_t samples_to_erase = commit_t1 * 160;
+                if (samples_to_erase < audio_buffer_.size()) {
+                    audio_buffer_.erase(audio_buffer_.begin(), audio_buffer_.begin() + samples_to_erase);
+                } else {
+                    audio_buffer_.clear();
+                }
+            } else if (force_commit) {
+                audio_buffer_.clear();
+            }
+            
+            return res;
         }
     }
     
-    return transcription;
+    // If not committing, all text is partial
+    for (int i = 0; i < n_segments; ++i) {
+        const char* text = whisper_full_get_segment_text_from_state(state_, i);
+        if (text) res.partial_text += text;
+    }
+    
+    return res;
+}
+
+std::string StreamingWhisperEngine::transcribe(size_t start_offset) {
+    // Legacy mapping (ignores start_offset which is no longer used outside of testing)
+    return transcribeSlidingWindow(true).committed_text;
 }
 
 void StreamingWhisperEngine::reset(size_t keep_samples) {
