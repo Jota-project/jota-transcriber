@@ -46,7 +46,6 @@ private:
         out << timestamp() << " " << tag(level);
         if (!ctx.empty()) out << " [" << ctx << "]";
         out << " " << msg << "\n";
-        out.flush();
     }
 
     static std::string timestamp() {

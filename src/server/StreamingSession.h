@@ -37,7 +37,11 @@ public:
         int whisper_threads = 4,
         const std::string& whisper_initial_prompt = "",
         int session_timeout_sec = 30,
-        std::shared_ptr<MQTTPublisher> mqtt_publisher = nullptr
+        std::shared_ptr<MQTTPublisher> mqtt_publisher = nullptr,
+        float whisper_temperature = 0.2f,
+        float whisper_temperature_inc = 0.2f,
+        float whisper_no_speech_thold = 0.3f,
+        float whisper_logprob_thold = -1.0f
     )
         : ws_(std::move(ws)),
           model_path_(model_path),
@@ -51,6 +55,10 @@ public:
           whisper_threads_(whisper_threads),
           whisper_initial_prompt_(whisper_initial_prompt),
           session_timeout_sec_(session_timeout_sec),
+          whisper_temperature_(whisper_temperature),
+          whisper_temperature_inc_(whisper_temperature_inc),
+          whisper_no_speech_thold_(whisper_no_speech_thold),
+          whisper_logprob_thold_(whisper_logprob_thold),
           model_acquired_(false),
           bytes_received_in_window_(0),
           rate_limit_start_(std::chrono::steady_clock::now()),
@@ -183,34 +191,7 @@ private:
 
         last_audio_time_ = std::chrono::steady_clock::now();
         engine_->processAudioChunk(audio);
-
-        size_t current_size = engine_->getBufferSize();
-        
-        // Triggers every 250ms of new audio (16kHz)
-        const size_t MIN_NEW_SAMPLES = 4000; 
-
-        if (current_size - last_transcribed_size_ >= MIN_NEW_SAMPLES) {
-            
-            auto res = engine_->transcribeSlidingWindow(false);
-            
-            if (!res.committed_text.empty()) {
-                full_transcription_ += res.committed_text;
-                // Buffer shrank if we committed
-                last_transcribed_size_ = engine_->getBufferSize();
-            } else {
-                last_transcribed_size_ = current_size;
-            }
-
-            if (!res.partial_text.empty() || !res.committed_text.empty()) {
-                std::string merged_so_far = full_transcription_ + res.partial_text;
-                json msg = {
-                    {"type", "transcription"},
-                    {"text", merged_so_far},
-                    {"is_final", false}
-                };
-                sendMessage(msg);
-            }
-        }
+        // Inference is handled entirely by flushLoop to avoid blocking the receive loop.
     }
 
     void handleJsonMessage(const std::string& message) {
@@ -352,6 +333,10 @@ private:
                 engine_->setThreads(whisper_threads_);
                 engine_->setBeamSize(whisper_beam_size_);
                 engine_->setVadThreshold(vad_thold);
+                engine_->setTemperature(whisper_temperature_);
+                engine_->setTemperatureInc(whisper_temperature_inc_);
+                engine_->setNoSpeechThreshold(whisper_no_speech_thold_);
+                engine_->setLogprobThreshold(whisper_logprob_thold_);
                 if (!whisper_initial_prompt_.empty()) {
                     engine_->setInitialPrompt(whisper_initial_prompt_);
                 }
@@ -442,6 +427,10 @@ private:
     int whisper_threads_;
     std::string whisper_initial_prompt_;
     int session_timeout_sec_;
+    float whisper_temperature_;
+    float whisper_temperature_inc_;
+    float whisper_no_speech_thold_;
+    float whisper_logprob_thold_;
     bool model_acquired_;
     
     // Rate limiting & Timeout
@@ -459,13 +448,16 @@ private:
     std::string full_transcription_;
 
     void flushLoop() {
+        // Handles ALL inference, decoupled from the WebSocket receive loop.
+        // Triggers on: 250ms of new audio accumulated, OR 400ms of silence with unprocessed audio.
+        const size_t MIN_NEW_SAMPLES = 4000; // 250ms @ 16kHz
+
         while (flush_running_) {
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
             if (!flush_running_) break;
 
             std::unique_lock<std::mutex> lock(state_mutex_, std::defer_lock);
             if (!lock.try_lock()) {
-                // Main thread is likely transcribing or receiving audio, skip this cycle
                 continue;
             }
 
@@ -475,10 +467,14 @@ private:
             auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_audio_time_).count();
 
             size_t current_size = engine_->getBufferSize();
-            if (current_size > last_transcribed_size_ && elapsed_ms > 800) {
-                // User stopped speaking for 800ms and there is fresh audio buffer
+            bool enough_new_audio = (current_size - last_transcribed_size_) >= MIN_NEW_SAMPLES;
+            bool silence_flush    = (elapsed_ms > 400) && (current_size > last_transcribed_size_);
+
+            if (enough_new_audio || silence_flush) {
+                Log::debug("flushLoop inference: new=" + std::to_string(current_size - last_transcribed_size_) +
+                           " silence_ms=" + std::to_string(elapsed_ms), session_id_);
                 auto res = engine_->transcribeSlidingWindow(false);
-                
+
                 if (!res.committed_text.empty()) {
                     full_transcription_ += res.committed_text;
                     last_transcribed_size_ = engine_->getBufferSize();
@@ -493,7 +489,6 @@ private:
                         {"text", merged_so_far},
                         {"is_final", false}
                     };
-                    // Unlock state before sending to prevent deadlocks if sendMessage blocks
                     lock.unlock();
                     sendMessage(msg);
                     lock.lock();

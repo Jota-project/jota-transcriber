@@ -95,6 +95,11 @@ public:
      *        > 0.0 activa VAD (ej: 0.6f). Si es muy alto, recorta palabras.
      */
     void setVadThreshold(float vad_thold);
+
+    void setTemperature(float temperature);
+    void setTemperatureInc(float temperature_inc);
+    void setNoSpeechThreshold(float no_speech_thold);
+    void setLogprobThreshold(float logprob_thold);
     
     /**
      * @brief Verificar si el engine está listo
@@ -123,6 +128,10 @@ private:
     int n_threads_;
     int beam_size_;
     float vad_thold_;
+    float temperature_;
+    float temperature_inc_;
+    float no_speech_thold_;
+    float logprob_thold_;
     int max_buffer_samples_; // Max samples in buffer (30s @ 16kHz)
 
     // High-pass filter state (per-instance, not static)

@@ -138,6 +138,18 @@ ServerConfig configFromEnv() {
     if (auto v = env("SESSION_TIMEOUT_SEC"); !v.empty())
         cfg.session_timeout_sec = std::stoi(v);
 
+    if (auto v = env("WHISPER_TEMPERATURE"); !v.empty())
+        cfg.whisper_temperature = std::stof(v);
+
+    if (auto v = env("WHISPER_TEMPERATURE_INC"); !v.empty())
+        cfg.whisper_temperature_inc = std::stof(v);
+
+    if (auto v = env("WHISPER_NO_SPEECH_THOLD"); !v.empty())
+        cfg.whisper_no_speech_thold = std::stof(v);
+
+    if (auto v = env("WHISPER_LOGPROB_THOLD"); !v.empty())
+        cfg.whisper_logprob_thold = std::stof(v);
+
     return cfg;
 }
 
@@ -161,7 +173,9 @@ void printUsage(const char* binary) {
     std::cout << "  TLS_CERT, TLS_KEY, MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP," << std::endl;
     std::cout << "  MQTT_URL, MQTT_TOPIC, MQTT_CLIENT_ID," << std::endl;
     std::cout << "  WHISPER_BEAM_SIZE, WHISPER_THREADS, MAX_CONCURRENT_INFERENCE," << std::endl;
-    std::cout << "  MODEL_CACHE_TTL, WHISPER_INITIAL_PROMPT, SESSION_TIMEOUT_SEC" << std::endl;
+    std::cout << "  MODEL_CACHE_TTL, WHISPER_INITIAL_PROMPT, SESSION_TIMEOUT_SEC," << std::endl;
+    std::cout << "  WHISPER_TEMPERATURE, WHISPER_TEMPERATURE_INC," << std::endl;
+    std::cout << "  WHISPER_NO_SPEECH_THOLD, WHISPER_LOGPROB_THOLD" << std::endl;
     std::cout << "CLI arguments override environment variables." << std::endl;
 }
 
@@ -224,6 +238,14 @@ ServerConfig parseArgs(int argc, char* argv[]) {
             config.whisper_initial_prompt = argv[++i];
         } else if (arg == "--session-timeout-sec" && i + 1 < argc) {
             config.session_timeout_sec = std::stoi(argv[++i]);
+        } else if (arg == "--whisper-temperature" && i + 1 < argc) {
+            config.whisper_temperature = std::stof(argv[++i]);
+        } else if (arg == "--whisper-temperature-inc" && i + 1 < argc) {
+            config.whisper_temperature_inc = std::stof(argv[++i]);
+        } else if (arg == "--whisper-no-speech-thold" && i + 1 < argc) {
+            config.whisper_no_speech_thold = std::stof(argv[++i]);
+        } else if (arg == "--whisper-logprob-thold" && i + 1 < argc) {
+            config.whisper_logprob_thold = std::stof(argv[++i]);
         } else if (arg == "--thread-safe") {
             // accepted for backwards compatibility
         } else if (arg.rfind("--", 0) != 0 &&
@@ -248,6 +270,10 @@ void handleSession(tcp::socket socket,
                    int whisper_threads,
                    const std::string& whisper_initial_prompt,
                    int session_timeout_sec,
+                   float whisper_temperature,
+                   float whisper_temperature_inc,
+                   float whisper_no_speech_thold,
+                   float whisper_logprob_thold,
                    std::shared_ptr<ssl::context> ssl_ctx,
                    std::shared_ptr<MQTTPublisher> mqtt_publisher) {
     ConnectionGuard guard(limiter, client_ip);
@@ -318,19 +344,23 @@ void handleSession(tcp::socket socket,
             auto session = std::make_shared<StreamingSession<websocket::stream<ssl::stream<tcp::socket>>>>(
                 std::move(ws), model_path, auth_manager,
                 whisper_beam_size, whisper_threads, whisper_initial_prompt,
-                session_timeout_sec, mqtt_publisher
+                session_timeout_sec, mqtt_publisher,
+                whisper_temperature, whisper_temperature_inc,
+                whisper_no_speech_thold, whisper_logprob_thold
             );
             session->run(req);
         } else {
             boost::beast::http::read(socket, buffer, req);
-            
+
             if (handle_http_request(socket)) return;
 
             websocket::stream<tcp::socket> ws(std::move(socket));
             auto session = std::make_shared<StreamingSession<websocket::stream<tcp::socket>>>(
                 std::move(ws), model_path, auth_manager,
                 whisper_beam_size, whisper_threads, whisper_initial_prompt,
-                session_timeout_sec, mqtt_publisher
+                session_timeout_sec, mqtt_publisher,
+                whisper_temperature, whisper_temperature_inc,
+                whisper_no_speech_thold, whisper_logprob_thold
             );
             session->run(req);
         }
@@ -369,6 +399,10 @@ int main(int argc, char* argv[]) {
                   "  threads=" + std::to_string(config.whisper_threads) +
                   "  max_concurrent=" + std::to_string(config.max_concurrent_inference) +
                   "  cache_ttl=" + std::to_string(config.model_cache_ttl) + "s");
+        Log::info("Whisper: temperature=" + std::to_string(config.whisper_temperature) +
+                  "  temperature_inc=" + std::to_string(config.whisper_temperature_inc) +
+                  "  no_speech_thold=" + std::to_string(config.whisper_no_speech_thold) +
+                  "  logprob_thold=" + std::to_string(config.whisper_logprob_thold));
         if (!config.whisper_initial_prompt.empty()) {
             Log::info("Whisper: initial_prompt=\"" + config.whisper_initial_prompt + "\"");
         }
@@ -465,6 +499,10 @@ int main(int argc, char* argv[]) {
                             config.whisper_threads,
                             config.whisper_initial_prompt,
                             config.session_timeout_sec,
+                            config.whisper_temperature,
+                            config.whisper_temperature_inc,
+                            config.whisper_no_speech_thold,
+                            config.whisper_logprob_thold,
                             ssl_ctx,
                             mqtt_publisher).detach();
             } catch (...) {
