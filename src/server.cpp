@@ -6,6 +6,8 @@
 #include <fstream>
 #include <string>
 #include <thread>
+#include <vector>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -150,6 +152,9 @@ ServerConfig configFromEnv() {
     if (auto v = env("WHISPER_LOGPROB_THOLD"); !v.empty())
         cfg.whisper_logprob_thold = std::stof(v);
 
+    if (auto v = env("SHUTDOWN_TIMEOUT_SEC"); !v.empty())
+        cfg.shutdown_timeout_sec = std::stoi(v);
+
     return cfg;
 }
 
@@ -165,7 +170,7 @@ void printUsage(const char* binary) {
               << " [--mqtt-url URL] [--mqtt-topic TOPIC]"
               << " [--whisper-beam-size N] [--whisper-threads N]"
               << " [--max-concurrent-inference N] [--model-cache-ttl N]"
-              << " [--whisper-initial-prompt TEXT] [--session-timeout-sec N]"
+              << " [--whisper-initial-prompt TEXT] [--session-timeout-sec N] [--shutdown-timeout-sec N]"
               << " [--env-file path]" << std::endl;
     std::cout << "All options can also be set via environment variables (or a .env file):" << std::endl;
     std::cout << "  MODEL_PATH, BIND_ADDRESS, PORT," << std::endl;
@@ -173,7 +178,7 @@ void printUsage(const char* binary) {
     std::cout << "  TLS_CERT, TLS_KEY, MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP," << std::endl;
     std::cout << "  MQTT_URL, MQTT_TOPIC, MQTT_CLIENT_ID," << std::endl;
     std::cout << "  WHISPER_BEAM_SIZE, WHISPER_THREADS, MAX_CONCURRENT_INFERENCE," << std::endl;
-    std::cout << "  MODEL_CACHE_TTL, WHISPER_INITIAL_PROMPT, SESSION_TIMEOUT_SEC," << std::endl;
+    std::cout << "  MODEL_CACHE_TTL, WHISPER_INITIAL_PROMPT, SESSION_TIMEOUT_SEC, SHUTDOWN_TIMEOUT_SEC," << std::endl;
     std::cout << "  WHISPER_TEMPERATURE, WHISPER_TEMPERATURE_INC," << std::endl;
     std::cout << "  WHISPER_NO_SPEECH_THOLD, WHISPER_LOGPROB_THOLD" << std::endl;
     std::cout << "CLI arguments override environment variables." << std::endl;
@@ -238,6 +243,8 @@ ServerConfig parseArgs(int argc, char* argv[]) {
             config.whisper_initial_prompt = argv[++i];
         } else if (arg == "--session-timeout-sec" && i + 1 < argc) {
             config.session_timeout_sec = std::stoi(argv[++i]);
+        } else if (arg == "--shutdown-timeout-sec" && i + 1 < argc) {
+            config.shutdown_timeout_sec = std::stoi(argv[++i]);
         } else if (arg == "--whisper-temperature" && i + 1 < argc) {
             config.whisper_temperature = std::stof(argv[++i]);
         } else if (arg == "--whisper-temperature-inc" && i + 1 < argc) {
@@ -457,14 +464,18 @@ int main(int argc, char* argv[]) {
         Log::info("Listening on " + std::string(use_ssl ? "wss" : "ws") +
                   "://" + config.bind_address + ":" + std::to_string(config.port));
 
+        // Thread vector: collect all session threads so we can join them at shutdown.
+        // Sessions are bounded by max_connections (default 8), so the vector is small.
+        std::vector<std::thread> session_threads;
+
+        // Run ioc in a dedicated thread so async_wait fires even while accept() blocks.
+        std::thread ioc_thread([&ioc]() { ioc.run(); });
+
         boost::asio::signal_set signals(ioc, SIGINT, SIGTERM);
-        signals.async_wait([&](boost::system::error_code const&, int) {
-            Log::info("Received termination signal, performing graceful shutdown...");
-            acceptor.close(); // Stop accepting new connections
-            SessionTracker::instance().shutdownAll(); // Interrupt active sessions
-            // The io_context will run out of work naturally if we wait briefly, or we can just exit
-            std::this_thread::sleep_for(std::chrono::seconds(2)); // Give 2 seconds for buffers to flush
-            std::exit(0);
+        signals.async_wait([&](boost::system::error_code const&, int signum) {
+            Log::info("Signal " + std::to_string(signum) + " received — stopping accept loop");
+            acceptor.close();
+            SessionTracker::instance().shutdownAll();
         });
 
         while (acceptor.is_open()) {
@@ -474,6 +485,9 @@ int main(int argc, char* argv[]) {
 
             if (ec) {
                 if (ec == boost::asio::error::operation_aborted) break;
+                // EINTR means a signal interrupted the syscall; the signal handler
+                // will close the acceptor — exit the loop so we can join threads.
+                if (ec == boost::asio::error::interrupted) break;
                 Log::error("Accept error: " + ec.message());
                 continue;
             }
@@ -489,7 +503,7 @@ int main(int argc, char* argv[]) {
             Log::info("New connection from " + client_ip);
 
             try {
-                std::thread(handleSession,
+                session_threads.emplace_back(handleSession,
                             std::move(socket),
                             limiter,
                             client_ip,
@@ -504,12 +518,42 @@ int main(int argc, char* argv[]) {
                             config.whisper_no_speech_thold,
                             config.whisper_logprob_thold,
                             ssl_ctx,
-                            mqtt_publisher).detach();
+                            mqtt_publisher);
             } catch (...) {
                 limiter->release(client_ip);
                 throw;
             }
         }
+
+        // Accept loop exited — all sockets already cancelled by shutdownAll().
+        // Join session threads with a configurable timeout via a watchdog.
+        Log::info("Waiting up to " + std::to_string(config.shutdown_timeout_sec) +
+                  "s for " + std::to_string(session_threads.size()) + " session(s) to finish...");
+
+        std::atomic<bool> all_joined{false};
+        std::thread watchdog([&all_joined, timeout = config.shutdown_timeout_sec]() {
+            auto deadline = std::chrono::steady_clock::now() +
+                            std::chrono::seconds(timeout);
+            while (!all_joined) {
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    Log::warn("Shutdown timeout (" + std::to_string(timeout) +
+                              "s) exceeded, forcing exit");
+                    std::exit(0);
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        });
+        watchdog.detach();
+
+        for (auto& t : session_threads) {
+            if (t.joinable()) t.join();
+        }
+        all_joined = true;
+
+        ioc.stop();
+        if (ioc_thread.joinable()) ioc_thread.join();
+
+        Log::info("Graceful shutdown complete.");
     } catch (std::exception& e) {
         Log::error(std::string("Fatal server error: ") + e.what());
         return 1;
