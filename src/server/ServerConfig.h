@@ -32,5 +32,5 @@ struct ServerConfig {
     float whisper_temperature = 0.0f;       // initial sampling temperature (0.0=greedy, fastest for streaming)
     float whisper_temperature_inc = 0.0f;   // temperature increment on repetition (0.0 disables fallback)
     float whisper_no_speech_thold = 0.3f;   // probability threshold to reject non-speech segments
-    float whisper_logprob_thold = -1.0f;    // log-prob threshold to reject low-confidence segments (-1.0=disabled)
+    float whisper_logprob_thold = -0.7f;    // log-prob threshold to reject low-confidence segments (-1.0=disabled)
 };

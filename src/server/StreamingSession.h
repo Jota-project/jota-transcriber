@@ -9,6 +9,8 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <sstream>
+#include <unordered_map>
 #include <nlohmann/json.hpp>
 #include <iostream>
 #include "whisper/StreamingWhisperEngine.h"
@@ -447,10 +449,34 @@ private:
     // Sliding window logic
     std::string full_transcription_;
 
+    // Returns true if 'text' contains repetition loops (hallucination artifact).
+    // Detects: single-word loops ("hola hola hola...") and phrase loops ("la verdad es que la verdad...").
+    static bool isHallucination(const std::string& text) {
+        // Long output on a short window is almost always a loop filling the decoder context.
+        if (text.length() > 500) return true;
+
+        std::istringstream ss(text);
+        std::unordered_map<std::string, int> bigrams;
+        std::string prev, cur;
+        int consec = 0;
+        while (ss >> cur) {
+            if (cur == prev) {
+                if (++consec >= 4) return true;
+            } else {
+                consec = 1;
+            }
+            if (!prev.empty() && ++bigrams[prev + ' ' + cur] >= 4) return true;
+            prev = cur;
+        }
+        return false;
+    }
+
     void flushLoop() {
         // Handles ALL inference, decoupled from the WebSocket receive loop.
         // Triggers on: 250ms of new audio accumulated, OR 400ms of silence with unprocessed audio.
-        const size_t MIN_NEW_SAMPLES = 4000; // 250ms @ 16kHz
+        // Does NOT trigger if buffer < 2s: Whisper hallucinates badly on very short windows.
+        const size_t MIN_NEW_SAMPLES    = 4000;  // 250ms @ 16kHz
+        const size_t MIN_BUFFER_SAMPLES = 32000; // 2s minimum before first inference
 
         while (flush_running_) {
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -463,36 +489,55 @@ private:
 
             if (!configured_ || !engine_) continue;
 
+            size_t current_size = engine_->getBufferSize();
+
+            // Guard: never infer on less than 2s of audio.
+            if (current_size < MIN_BUFFER_SAMPLES) continue;
+
             auto now = std::chrono::steady_clock::now();
             auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_audio_time_).count();
 
-            size_t current_size = engine_->getBufferSize();
             bool enough_new_audio = (current_size - last_transcribed_size_) >= MIN_NEW_SAMPLES;
             bool silence_flush    = (elapsed_ms > 400) && (current_size > last_transcribed_size_);
 
-            if (enough_new_audio || silence_flush) {
-                Log::debug("flushLoop inference: new=" + std::to_string(current_size - last_transcribed_size_) +
-                           " silence_ms=" + std::to_string(elapsed_ms), session_id_);
-                auto res = engine_->transcribeSlidingWindow(false);
+            if (!enough_new_audio && !silence_flush) continue;
 
-                if (!res.committed_text.empty()) {
+            Log::debug("flushLoop inference: new=" + std::to_string(current_size - last_transcribed_size_) +
+                       " silence_ms=" + std::to_string(elapsed_ms), session_id_);
+            auto res = engine_->transcribeSlidingWindow(false);
+
+            // Hallucination guard: filter loops before updating state or sending to client.
+            bool committed_ok = !res.committed_text.empty() && !isHallucination(res.committed_text);
+            bool partial_ok   = !res.partial_text.empty()   && !isHallucination(res.partial_text);
+
+            if (!res.committed_text.empty()) {
+                if (committed_ok) {
                     full_transcription_ += res.committed_text;
-                    last_transcribed_size_ = engine_->getBufferSize();
                 } else {
-                    last_transcribed_size_ = current_size;
+                    Log::warn("Dropping hallucinated commit (len=" +
+                              std::to_string(res.committed_text.length()) + "): '" +
+                              res.committed_text.substr(0, 80) + "'", session_id_);
                 }
+                last_transcribed_size_ = engine_->getBufferSize();
+            } else {
+                last_transcribed_size_ = current_size;
+            }
 
-                if (!res.partial_text.empty() || !res.committed_text.empty()) {
-                    std::string merged_so_far = full_transcription_ + res.partial_text;
-                    json msg = {
-                        {"type", "transcription"},
-                        {"text", merged_so_far},
-                        {"is_final", false}
-                    };
-                    lock.unlock();
-                    sendMessage(msg);
-                    lock.lock();
-                }
+            if (!res.partial_text.empty() && !partial_ok) {
+                Log::warn("Suppressing hallucinated partial (len=" +
+                          std::to_string(res.partial_text.length()) + ")", session_id_);
+            }
+
+            if (committed_ok || partial_ok) {
+                std::string merged = full_transcription_ + (partial_ok ? res.partial_text : "");
+                json msg = {
+                    {"type", "transcription"},
+                    {"text", merged},
+                    {"is_final", false}
+                };
+                lock.unlock();
+                sendMessage(msg);
+                lock.lock();
             }
         }
     }
