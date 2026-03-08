@@ -21,6 +21,7 @@
 #include "mqtt/MQTTPublisher.h"
 #include "mqtt/TranscriptionEvent.h"
 #include "log/Log.h"
+#include "utils/HallucinationGuard.h"
 
 namespace beast = boost::beast;
 namespace websocket = beast::websocket;
@@ -448,28 +449,6 @@ private:
 
     // Sliding window logic
     std::string full_transcription_;
-
-    // Returns true if 'text' contains repetition loops (hallucination artifact).
-    // Detects: single-word loops ("hola hola hola...") and phrase loops ("la verdad es que la verdad...").
-    static bool isHallucination(const std::string& text) {
-        // Long output on a short window is almost always a loop filling the decoder context.
-        if (text.length() > 500) return true;
-
-        std::istringstream ss(text);
-        std::unordered_map<std::string, int> bigrams;
-        std::string prev, cur;
-        int consec = 0;
-        while (ss >> cur) {
-            if (cur == prev) {
-                if (++consec >= 4) return true;
-            } else {
-                consec = 1;
-            }
-            if (!prev.empty() && ++bigrams[prev + ' ' + cur] >= 4) return true;
-            prev = cur;
-        }
-        return false;
-    }
 
     void flushLoop() {
         // Handles ALL inference, decoupled from the WebSocket receive loop.
