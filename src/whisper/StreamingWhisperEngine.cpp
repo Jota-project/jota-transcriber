@@ -6,6 +6,7 @@
 #include <algorithm>
 #include "InferenceLimiter.h"
 #include "log/Log.h"
+#include "utils/AudioPreprocessor.h"
 
 StreamingWhisperEngine::StreamingWhisperEngine(whisper_context* shared_ctx)
     : ctx_(shared_ctx),
@@ -47,33 +48,8 @@ StreamingWhisperEngine::~StreamingWhisperEngine() {
 void StreamingWhisperEngine::processAudioChunk(const std::vector<float>& pcm_data) {
     std::lock_guard<std::mutex> lock(buffer_mutex_);
     
-    // High-pass filter to remove < 80Hz rumble (IIR, alpha ~ 0.97 at 16kHz)
-    // State is per-instance (hp_prev_raw_ / hp_prev_filtered_) — not static.
-    const float alpha = 0.969f;
-
-    float peak = 0.0f;
     std::vector<float> prepped_data = pcm_data;
-    for (size_t i = 0; i < prepped_data.size(); ++i) {
-        float raw      = prepped_data[i];
-        float filtered = alpha * (hp_prev_filtered_ + raw - hp_prev_raw_);
-        hp_prev_raw_      = raw;
-        hp_prev_filtered_ = filtered;
-
-        prepped_data[i] = filtered;
-        peak = std::max(peak, std::abs(filtered));
-    }
-    
-    // Fast Peak Normalization ~ 0.9 if it's too quiet, but only if there is *real* signal.
-    // Threshold of 0.02 (~600 units int16) prevents amplifying mic noise/silence at session
-    // start, which causes Whisper to hallucinate ("suscríbete", etc.).
-    if (peak > 0.02f && peak < 0.9f) {
-        float gain = 0.9f / peak;
-        // Cap boost at 4x to avoid over-amplifying borderline-quiet audio
-        gain = std::min(gain, 4.0f);
-        for (float& sample : prepped_data) {
-            sample *= gain;
-        }
-    }
+    AudioPreprocessor::process(prepped_data, hp_prev_raw_, hp_prev_filtered_);
 
     size_t new_total_size = audio_buffer_.size() + prepped_data.size();
     
