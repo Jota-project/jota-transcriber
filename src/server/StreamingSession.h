@@ -519,6 +519,13 @@ private:
             auto res = engine_->transcribeSlidingWindow(false);
             InferenceLimiter::instance().release();
 
+            // If inference drained the buffer below HWM, reset the overflow flag so the
+            // next saturation episode triggers a new warning regardless of client audio timing.
+            constexpr size_t HIGH_WATER_MARK = 16000 * 20;
+            if (buffer_overflowed_ && engine_->getBufferSize() < HIGH_WATER_MARK) {
+                buffer_overflowed_ = false;
+            }
+
             // Hallucination guard: filter loops before updating state or sending to client.
             bool committed_ok = !res.committed_text.empty() && !isHallucination(res.committed_text);
             bool partial_ok   = !res.partial_text.empty()   && !isHallucination(res.partial_text);
