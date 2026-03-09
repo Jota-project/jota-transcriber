@@ -207,3 +207,28 @@ TEST_F(StreamingWhisperEngineTest, ProcessAudioChunkReturnsFalseAfterReset) {
     bool overflow = engine.processAudioChunk(extra);
     EXPECT_FALSE(overflow); // buffer cleared, no overflow
 }
+
+TEST_F(StreamingWhisperEngineTest, BufferSizeDoesNotGrowBeyondHWMWhenDropping) {
+    StreamingWhisperEngine engine(ctx_);
+    constexpr size_t HWM = 16000 * 20;
+    engine.processAudioChunk(std::vector<float>(HWM, 0.0f));
+    EXPECT_EQ(engine.getBufferSize(), HWM);
+
+    // These should be silently dropped
+    engine.processAudioChunk(std::vector<float>(16000, 0.0f));
+    engine.processAudioChunk(std::vector<float>(16000, 0.0f));
+
+    // Buffer must still be at exactly HWM — not growing
+    EXPECT_EQ(engine.getBufferSize(), HWM);
+}
+
+TEST_F(StreamingWhisperEngineTest, ProcessAudioChunkReturnsTrueConsecutivelyAtHWM) {
+    StreamingWhisperEngine engine(ctx_);
+    constexpr size_t HWM = 16000 * 20;
+    engine.processAudioChunk(std::vector<float>(HWM, 0.0f));
+
+    // Every subsequent chunk must return true (buffer stays full)
+    EXPECT_TRUE(engine.processAudioChunk(std::vector<float>(1600, 0.0f)));
+    EXPECT_TRUE(engine.processAudioChunk(std::vector<float>(1600, 0.0f)));
+    EXPECT_TRUE(engine.processAudioChunk(std::vector<float>(1600, 0.0f)));
+}
