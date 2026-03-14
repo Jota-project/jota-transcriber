@@ -20,8 +20,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            libboost-dev libssl-dev \
-            libmosquitto-dev libmosquittopp-dev
+            libboost-dev libssl-dev
 
       - name: Configure (tests only, no server)
         run: |

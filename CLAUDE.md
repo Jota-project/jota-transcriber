@@ -92,10 +92,9 @@ Model files must be placed in `./models/` before starting (mounted to `/app/mode
 
 ### Linking — importante
 
-whisper.cpp construye **librerías compartidas por defecto** (`BUILD_SHARED_LIBS=ON`). Esto hace que el binario quede enlazado contra `.so` con rutas absolutas del directorio de build, lo que rompe el despliegue en Docker y al mover el binario. Siempre compilar con **`-DBUILD_SHARED_LIBS=OFF`** para enlazar estáticamente ggml/whisper dentro del binario. Las dependencias de sistema que quedan en runtime son: `libssl3`, `libgomp1`, `libmosquitto1`, `libmosquittopp1`, `libboost-system`, `libboost-thread`, `libstdc++6`.
+whisper.cpp construye **librerías compartidas por defecto** (`BUILD_SHARED_LIBS=ON`). Esto hace que el binario quede enlazado contra `.so` con rutas absolutas del directorio de build, lo que rompe el despliegue en Docker y al mover el binario. Siempre compilar con **`-DBUILD_SHARED_LIBS=OFF`** para enlazar estáticamente ggml/whisper dentro del binario. Las dependencias de sistema que quedan en runtime son: `libssl3`, `libgomp1`, `libboost-system`, `libboost-thread`, `libstdc++6`.
 
 ### Key constraints
 - `StreamingSession` is a **template** (`<Stream>`) to support both plain TCP (`tcp::socket`) and TLS (`ssl::stream<tcp::socket>`); implementation lives entirely in the `.h` file
 - whisper.cpp is a **git submodule** at `third_party/whisper.cpp/`
 - nlohmann/json and Google Test are fetched via CMake `FetchContent`
-- Mosquitto C++ must be pre-installed on the system (not fetched by CMake)
