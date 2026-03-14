@@ -11,9 +11,14 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 - `--auth-token` flag for static local token authentication — constant-time comparison, no external API required. Also available as `AUTH_TOKEN` env var.
+- `protocol_version: 1` field in the `ready` message — clients can use this to detect protocol breaking changes in future releases.
 
 ### Fixed
 - `buffer_overflowed_` flag now resets deterministically in `flushLoop` when inference drains the buffer below the 20s HWM, instead of waiting for the next client audio chunk.
+
+### Docs
+- `clients/README.md`: corrected the Protocol section — config message now shows the actual fields (`token`, `publish_mqtt`, `vad_thold`) and audio is documented as binary WebSocket frames (float32 LE), not JSON/base64.
+- `clients/API_GUIDE.md`: `ready` message example now includes `beam_size`, `publish_mqtt`, and `protocol_version` fields that the server actually sends.
 
 ---
 

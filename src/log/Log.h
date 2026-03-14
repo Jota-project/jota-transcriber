@@ -45,7 +45,7 @@ private:
         auto& out = (level >= Level::WARN) ? std::cerr : std::cout;
         out << timestamp() << " " << tag(level);
         if (!ctx.empty()) out << " [" << ctx << "]";
-        out << " " << msg << "\n";
+        out << " " << msg << std::endl;
     }
 
     static std::string timestamp() {
