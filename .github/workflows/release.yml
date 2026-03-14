@@ -3,14 +3,14 @@ name: Semantic Release
 on:
   push:
     branches:
-      - main # Se ejecuta cada vez que integras código en la rama principal
+      - main # Se ejecuta tras el squash merge en la rama principal
 
 jobs:
   release:
     name: Release and Changelog
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Necesario para crear tags y actualizar el changelog
+      contents: write 
       issues: write
       pull-requests: write
 
@@ -18,7 +18,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Necesario para que la herramienta lea todo el historial de commits
+          fetch-depth: 0 
+          # Importante: Usar el token para que el checkout configure la identidad
+          token: ${{ secrets.RELEASE_TOKEN }} 
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -34,5 +36,6 @@ jobs:
 
       - name: Run Semantic Release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Usamos tu PAT con permisos de bypass para saltar la regla de PR
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }} 
         run: npx semantic-release
