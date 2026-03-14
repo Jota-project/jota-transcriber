@@ -68,25 +68,21 @@ ffmpeg -i video.mp4 -ar 16000 -ac 1 -sample_fmt s16 audio.wav
 
 El cliente implementa el protocolo JSON del servidor:
 
-1. **Configuración**:
+1. **Configuración** (primer mensaje obligatorio):
 ```json
 {
   "type": "config",
   "language": "es",
-  "energy_threshold": 0.02,
-  "min_silence_frames": 20
+  "token": "TU_TOKEN",
+  "publish_mqtt": false,
+  "vad_thold": 0.0
 }
 ```
+`token` solo es obligatorio si el servidor tiene auth activado. `language`, `publish_mqtt` y `vad_thold` son opcionales.
 
-2. **Audio** (chunks de 100ms):
-```json
-{
-  "type": "audio",
-  "data": "base64_encoded_float32_pcm",
-  "sample_rate": 16000,
-  "channels": 1
-}
-```
+2. **Audio** (frames WebSocket binarios, NO JSON):
+
+Los datos de audio se envían como **frames WebSocket binarios**: float32 little-endian, 16 kHz, mono. Chunks recomendados de 100–500 ms (1 600–8 000 muestras = 6 400–32 000 bytes).
 
 3. **Finalización**:
 ```json
@@ -97,10 +93,10 @@ El cliente implementa el protocolo JSON del servidor:
 
 ### Respuestas del Servidor
 
-- **Ready**: Confirmación de configuración
-- **Transcription**: Texto transcrito (parcial o final)
-- **VAD State**: Estado de detección de voz (opcional)
-- **Error**: Mensajes de error
+- **Ready**: Confirmación de configuración con `session_id` y parámetros activos
+- **Transcription**: Texto transcrito acumulativo (`is_final: false` parcial, `is_final: true` tras `end`)
+- **Warning**: Aviso no fatal, ej. `"code": "buffer_full"` cuando el buffer supera 20 s
+- **Error**: Error de sesión con `code` (ver `clients/API_GUIDE.md` para lista completa)
 
 ## Cliente Web (Próximamente)
 

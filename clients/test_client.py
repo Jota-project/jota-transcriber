@@ -50,6 +50,7 @@ class TranscriptionClient:
         self.server_url = server_url
         self.ws = None
         self.running = False
+        self.received_final = False
     
     async def connect(self):
         """Conectar al servidor WebSocket"""
@@ -236,6 +237,8 @@ class TranscriptionClient:
                 text = msg.get("text", "")
                 marker = "🔴" if is_final else "⚪"
                 print(f"{marker} {text}")
+                if is_final:
+                    self.received_final = True
             
             elif msg_type == "warning":
                 print(f"⚠️  Servidor: [{msg.get('code')}] {msg.get('message')}")
@@ -286,17 +289,25 @@ async def main():
         elif args.generate:
             await client.send_generated_audio(args.generate, args.duration, args.freq)
             
-        await client.send_end()
-        
-        # Esperar últimos mensajes
-        print("⏳ Esperando respuestas finales (3s)...")
-        t_end = asyncio.get_event_loop().time() + 3.0
-        while asyncio.get_event_loop().time() < t_end:
-            await client.process_pending_messages()
-            await asyncio.sleep(0.1)
-            
     except KeyboardInterrupt:
-        print("\n👋 Interrumpido por usuario")
+        print("\n👋 Grabación interrumpida por usuario. Obteniendo último bloque de texto...")
+        client.running = False
+
+    try:
+        # Enviar fin y esperar respuesta final si todo salió bien o si se interrumpió la grabación
+        if client.ws and not client.ws.closed:
+            await client.send_end()
+            
+            print("⏳ Esperando transcripción final...")
+            # Poner un timeout lógico en caso de que el servidor no responda is_final=true
+            t_end = asyncio.get_event_loop().time() + 10.0
+            while not client.received_final and asyncio.get_event_loop().time() < t_end:
+                await client.process_pending_messages()
+                await asyncio.sleep(0.05)
+                
+            if not client.received_final:
+                print("⚠️  Tiempo de espera agotado sin recibir is_final=true")
+            
     except Exception as e:
         print(f"❌ Error fatal: {e}")
     finally:

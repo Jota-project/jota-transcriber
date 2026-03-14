@@ -130,13 +130,18 @@ Respuesta al mensaje `config` cuando todo es correcto.
 ```json
 {
   "type": "ready",
+  "protocol_version": 1,
   "session_id": "session-1709123456789-4821",
   "config": {
     "language": "es",
-    "sample_rate": 16000
+    "sample_rate": 16000,
+    "beam_size": 1,
+    "publish_mqtt": false
   }
 }
 ```
+
+`protocol_version` identifica la versión del protocolo WebSocket. Incrementará si se introducen cambios incompatibles. Los clientes pueden usarlo para negociar compatibilidad.
 
 ---
 
