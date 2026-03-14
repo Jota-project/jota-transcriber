@@ -179,6 +179,7 @@ private:
     void sendReady() {
         json msg = {
             {"type", "ready"},
+            {"protocol_version", 1},
             {"session_id", session_id_},
             {"config", {
                 {"language", language_},
@@ -374,6 +375,7 @@ private:
                 configured_ = true;
                 last_transcribed_size_ = 0;
                 full_transcription_    = "";
+                raw_transcription_     = "";
                 last_audio_time_ = std::chrono::steady_clock::now();
             }
 
@@ -396,7 +398,17 @@ private:
             std::lock_guard<std::mutex> lock(state_mutex_);
             if (engine_) {
                 auto res = engine_->transcribeSlidingWindow(true); // force commit
+                // Note: no hallucination guard here — this is the last chance to capture audio
+                // that the engine still holds in its buffer.
                 full_transcription_ += res.committed_text;
+            }
+
+            // Fallback: if all flushLoop commits were hallucination-filtered (audio was erased
+            // from the engine buffer but text was discarded), full_transcription_ is empty.
+            // Use the raw accumulated text so the client receives something rather than nothing.
+            if (full_transcription_.empty() && !raw_transcription_.empty()) {
+                Log::warn("full_transcription_ empty at end-of-session — using raw fallback (all commits were hallucination-filtered)", session_id_);
+                full_transcription_ = raw_transcription_;
             }
         }
 
@@ -476,7 +488,8 @@ private:
     std::chrono::steady_clock::time_point last_audio_time_;
 
     // Sliding window logic
-    std::string full_transcription_;
+    std::string full_transcription_;     // filtered (hallucinations discarded)
+    std::string raw_transcription_;      // unfiltered fallback — used when full_ is empty at handleEnd()
 
     void flushLoop() {
         // Handles ALL inference, decoupled from the WebSocket receive loop.
@@ -531,6 +544,10 @@ private:
             bool partial_ok   = !res.partial_text.empty()   && !isHallucination(res.partial_text);
 
             if (!res.committed_text.empty()) {
+                // Always accumulate raw — audio was already erased from engine buffer,
+                // so this is the only copy left. Used as fallback in handleEnd() if all
+                // commits were hallucination-filtered and full_transcription_ ends up empty.
+                raw_transcription_ += res.committed_text;
                 if (committed_ok) {
                     full_transcription_ += res.committed_text;
                 } else {
