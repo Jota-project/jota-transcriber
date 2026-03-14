@@ -15,7 +15,6 @@ add_executable(unit_tests
     ${CMAKE_SOURCE_DIR}/src/server/AuthManager.cpp
     ${CMAKE_SOURCE_DIR}/src/auth/AuthCache.cpp
     ${CMAKE_SOURCE_DIR}/src/auth/ApiAuthClient.cpp
-    ${CMAKE_SOURCE_DIR}/src/mqtt/MQTTPublisher.cpp
 )
 
 find_package(Boost REQUIRED)
@@ -31,17 +30,6 @@ if(NOT TARGET nlohmann_json::nlohmann_json)
     FetchContent_MakeAvailable(json)
 endif()
 
-# Mosquitto: found by BUILD_SERVER when ON; find here when OFF
-if(NOT MOSQUITTO_FOUND)
-    find_path(MOSQUITTO_INCLUDE_DIR mosquittopp.h)
-    find_library(MOSQUITTO_LIBRARY mosquitto)
-    find_library(MOSQUITTO_PP_LIBRARY mosquittopp)
-    if(MOSQUITTO_INCLUDE_DIR AND MOSQUITTO_LIBRARY AND MOSQUITTO_PP_LIBRARY)
-        set(MOSQUITTO_LIBRARIES ${MOSQUITTO_PP_LIBRARY} ${MOSQUITTO_LIBRARY})
-        set(MOSQUITTO_INCLUDE_DIRS ${MOSQUITTO_INCLUDE_DIR})
-    endif()
-endif()
-
 target_link_libraries(unit_tests
     streaming_whisper
     GTest::gtest_main
@@ -50,12 +38,10 @@ target_link_libraries(unit_tests
     OpenSSL::SSL
     OpenSSL::Crypto
     pthread
-    ${MOSQUITTO_LIBRARIES}
 )
 
 target_include_directories(unit_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
-    ${MOSQUITTO_INCLUDE_DIRS}
 )
 
 target_compile_definitions(unit_tests PRIVATE

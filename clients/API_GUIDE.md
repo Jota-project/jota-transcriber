@@ -64,7 +64,6 @@ Debe ser el **primer mensaje** de la sesión. El servidor no aceptará audio has
 | `type` | string | sí | Siempre `"config"` |
 | `language` | string | no | Código de idioma ISO 639-1. Default: `"es"`. Usar `"auto"` para detección automática |
 | `token` | string | si el servidor tiene auth activado | Token de autenticación |
-| `publish_mqtt` | boolean | no | Publicar transcripción final en MQTT. Default: `false` |
 | `vad_thold` | number | no | Umbral VAD `[0.0–1.0]`. `0.0` desactiva VAD. Default: `0.0` |
 
 **Idiomas soportados** (selección): `"es"`, `"en"`, `"fr"`, `"de"`, `"it"`, `"pt"`, `"zh"`, `"ja"`, `"ko"`, `"ru"`, `"auto"` (cualquier código soportado por Whisper).
@@ -135,8 +134,7 @@ Respuesta al mensaje `config` cuando todo es correcto.
   "config": {
     "language": "es",
     "sample_rate": 16000,
-    "beam_size": 1,
-    "publish_mqtt": false
+    "beam_size": 1
   }
 }
 ```

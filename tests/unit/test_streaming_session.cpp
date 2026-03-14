@@ -132,7 +132,7 @@ protected:
                                     std::move(ws),
                                     model_path,
                                     auth_manager,
-                                    5, 4, "", 30, nullptr, 0.2f, 0.2f, 0.3f, -1.0f
+                                    5, 4, "", 30, 0.2f, 0.2f, 0.3f, -1.0f
                                 );
                                 session->run(req);
                             } catch (...) {}

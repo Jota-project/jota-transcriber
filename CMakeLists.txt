@@ -38,27 +38,12 @@ if(BUILD_SERVER)
     )
     FetchContent_MakeAvailable(json)
 
-    # Mosquitto C++ (MQTT)
-    find_path(MOSQUITTO_INCLUDE_DIR mosquittopp.h)
-    find_library(MOSQUITTO_LIBRARY mosquitto)
-    find_library(MOSQUITTO_PP_LIBRARY mosquittopp)
-
-    if(MOSQUITTO_INCLUDE_DIR AND MOSQUITTO_LIBRARY AND MOSQUITTO_PP_LIBRARY)
-        set(MOSQUITTO_FOUND TRUE)
-        set(MOSQUITTO_LIBRARIES ${MOSQUITTO_PP_LIBRARY} ${MOSQUITTO_LIBRARY})
-        set(MOSQUITTO_INCLUDE_DIRS ${MOSQUITTO_INCLUDE_DIR})
-        message(STATUS "Mosquitto C++ found: ${MOSQUITTO_INCLUDE_DIR}")
-    else()
-        message(FATAL_ERROR "Mosquitto C++ not found. Install libmosquittopp-dev.")
-    endif(BUILD_SERVER)
-
     add_executable(jota-transcriber
         src/server.cpp
         src/server/StreamingSession.cpp
         src/server/AuthManager.cpp
         src/server/ConnectionLimiter.cpp
         src/server/ConnectionGuard.cpp
-        src/mqtt/MQTTPublisher.cpp
         src/auth/ApiAuthClient.cpp
         src/auth/AuthCache.cpp
     )
@@ -77,7 +62,6 @@ if(BUILD_SERVER)
         nlohmann_json::nlohmann_json
         OpenSSL::SSL
         OpenSSL::Crypto
-        ${MOSQUITTO_LIBRARIES}
     )
 endif()
 

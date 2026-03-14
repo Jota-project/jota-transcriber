@@ -10,8 +10,6 @@ RUN apt-get update && apt-get install -y \
     git \
     libboost-all-dev \
     libssl-dev \
-    libmosquitto-dev \
-    libmosquittopp-dev \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
@@ -39,8 +37,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libboost-system1.74.0 \
     libboost-thread1.74.0 \
     libssl3 \
-    libmosquitto1 \
-    libmosquittopp1 \
     libgomp1 \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* \

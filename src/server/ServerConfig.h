@@ -18,11 +18,6 @@ struct ServerConfig {
     int auth_cache_ttl = 300;           // seconds
     int auth_api_timeout = 5;           // seconds
 
-    // MQTT
-    std::string mqtt_url         = "";
-    std::string mqtt_topic       = "transcription/results";
-    std::string mqtt_client_id   = "jota-transcriber";
-
     int whisper_beam_size = 1;          // beam search size (1 = greedy, fastest for streaming)
     int whisper_threads = 4;            // threads per transcription
     int max_concurrent_inference = 4;   // Max simultaneous whisper decodes

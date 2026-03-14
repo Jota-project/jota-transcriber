@@ -74,11 +74,10 @@ El cliente implementa el protocolo JSON del servidor:
   "type": "config",
   "language": "es",
   "token": "TU_TOKEN",
-  "publish_mqtt": false,
   "vad_thold": 0.0
 }
 ```
-`token` solo es obligatorio si el servidor tiene auth activado. `language`, `publish_mqtt` y `vad_thold` son opcionales.
+`token` solo es obligatorio si el servidor tiene auth activado. `language` y `vad_thold` son opcionales.
 
 2. **Audio** (frames WebSocket binarios, NO JSON):
 

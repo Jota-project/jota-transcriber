@@ -16,7 +16,6 @@ High-performance real-time audio transcription microservice built with C++17 and
 - Non-blocking inference — GPU saturation skips a cycle instead of blocking
 - Audio buffer high-water mark (20s) with client-side warning
 - Hallucination guard against Whisper decoder loops
-- MQTT publishing of final transcriptions (optional, per session)
 - Prometheus metrics at `/metrics`, health check at `/health`, readiness at `/ready`
 - Docker with NVIDIA GPU support
 
@@ -27,7 +26,6 @@ High-performance real-time audio transcription microservice built with C++17 and
 - CMake 3.16+, GCC 9+ or Clang 10+ (C++17)
 - Boost (asio, beast, system, thread)
 - OpenSSL
-- libmosquitto / libmosquittopp (only if MQTT is needed)
 
 ### Build
 
@@ -116,8 +114,6 @@ Model files must be placed in `./models/` before starting (mounted at `/app/mode
 | `--max-connections-per-ip N` | `2` | Per-IP connection cap |
 | `--session-timeout-sec N` | `30` | Idle session timeout |
 | `--shutdown-timeout-sec N` | `10` | Graceful shutdown wait |
-| `--mqtt-url URL` | — | MQTT broker URL (e.g. `mqtt://localhost:1883`) |
-| `--mqtt-topic TOPIC` | `transcription` | MQTT topic for final transcriptions |
 | `--whisper-beam-size N` | `1` | Beam size (1 = greedy, fastest) |
 | `--whisper-threads N` | `4` | CPU threads per inference |
 | `--max-concurrent-inference N` | `4` | Max simultaneous Whisper decodes |
@@ -162,7 +158,6 @@ Client                           Server
 
 - `language`: ISO 639-1 code (`"es"`, `"en"`, `"fr"`, …) or `"auto"` for detection. Default: `"es"`.
 - `token`: required only if the server has auth enabled.
-- `publish_mqtt`: `true` to publish final transcription to MQTT. Default: `false`.
 - `vad_thold`: VAD threshold `[0.0–1.0]`. `0.0` disables VAD. Default: `0.0`.
 
 ### Audio format

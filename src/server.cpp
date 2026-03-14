@@ -19,7 +19,6 @@
 #include "server/ConnectionGuard.h"
 #include "server/AuthManager.h"
 #include "auth/ApiAuthConfig.h"
-#include "mqtt/MQTTPublisher.h"
 #include "whisper/ModelCache.h"
 #include "whisper/InferenceLimiter.h"
 #include "server/SessionTracker.h"
@@ -115,15 +114,6 @@ ServerConfig configFromEnv() {
     if (auto v = env("MAX_CONNECTIONS_PER_IP"); !v.empty())
         cfg.max_connections_per_ip = static_cast<size_t>(std::stoul(v));
 
-    if (auto v = env("MQTT_URL"); !v.empty())
-        cfg.mqtt_url = v;
-
-    if (auto v = env("MQTT_TOPIC"); !v.empty())
-        cfg.mqtt_topic = v;
-
-    if (auto v = env("MQTT_CLIENT_ID"); !v.empty())
-        cfg.mqtt_client_id = v;
-
     // Whisper quality params
     if (auto v = env("WHISPER_BEAM_SIZE"); !v.empty())
         cfg.whisper_beam_size = std::stoi(v);
@@ -171,7 +161,6 @@ void printUsage(const char* binary) {
               << " [--auth-cache-ttl N] [--auth-api-timeout N]"
               << " [--cert cert.pem] [--key key.pem]"
               << " [--max-connections N] [--max-connections-per-ip N]"
-              << " [--mqtt-url URL] [--mqtt-topic TOPIC]"
               << " [--whisper-beam-size N] [--whisper-threads N]"
               << " [--max-concurrent-inference N] [--model-cache-ttl N]"
               << " [--whisper-initial-prompt TEXT] [--session-timeout-sec N] [--shutdown-timeout-sec N]"
@@ -180,7 +169,6 @@ void printUsage(const char* binary) {
     std::cout << "  MODEL_PATH, BIND_ADDRESS, PORT," << std::endl;
     std::cout << "  AUTH_TOKEN, AUTH_API_URL, AUTH_API_SECRET, AUTH_CACHE_TTL, AUTH_API_TIMEOUT," << std::endl;
     std::cout << "  TLS_CERT, TLS_KEY, MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP," << std::endl;
-    std::cout << "  MQTT_URL, MQTT_TOPIC, MQTT_CLIENT_ID," << std::endl;
     std::cout << "  WHISPER_BEAM_SIZE, WHISPER_THREADS, MAX_CONCURRENT_INFERENCE," << std::endl;
     std::cout << "  MODEL_CACHE_TTL, WHISPER_INITIAL_PROMPT, SESSION_TIMEOUT_SEC, SHUTDOWN_TIMEOUT_SEC," << std::endl;
     std::cout << "  WHISPER_TEMPERATURE, WHISPER_TEMPERATURE_INC," << std::endl;
@@ -233,10 +221,6 @@ ServerConfig parseArgs(int argc, char* argv[]) {
             config.max_connections = static_cast<size_t>(std::stoul(argv[++i]));
         } else if (arg == "--max-connections-per-ip" && i + 1 < argc) {
             config.max_connections_per_ip = static_cast<size_t>(std::stoul(argv[++i]));
-        } else if (arg == "--mqtt-url" && i + 1 < argc) {
-            config.mqtt_url = argv[++i];
-        } else if (arg == "--mqtt-topic" && i + 1 < argc) {
-            config.mqtt_topic = argv[++i];
         } else if (arg == "--whisper-beam-size" && i + 1 < argc) {
             config.whisper_beam_size = std::stoi(argv[++i]);
         } else if (arg == "--whisper-threads" && i + 1 < argc) {
@@ -287,8 +271,7 @@ void handleSession(tcp::socket socket,
                    float whisper_temperature_inc,
                    float whisper_no_speech_thold,
                    float whisper_logprob_thold,
-                   std::shared_ptr<ssl::context> ssl_ctx,
-                   std::shared_ptr<MQTTPublisher> mqtt_publisher) {
+                   std::shared_ptr<ssl::context> ssl_ctx) {
     ConnectionGuard guard(limiter, client_ip);
 
     try {
@@ -357,7 +340,7 @@ void handleSession(tcp::socket socket,
             auto session = std::make_shared<StreamingSession<websocket::stream<ssl::stream<tcp::socket>>>>(
                 std::move(ws), model_path, auth_manager,
                 whisper_beam_size, whisper_threads, whisper_initial_prompt,
-                session_timeout_sec, mqtt_publisher,
+                session_timeout_sec,
                 whisper_temperature, whisper_temperature_inc,
                 whisper_no_speech_thold, whisper_logprob_thold
             );
@@ -371,7 +354,7 @@ void handleSession(tcp::socket socket,
             auto session = std::make_shared<StreamingSession<websocket::stream<tcp::socket>>>(
                 std::move(ws), model_path, auth_manager,
                 whisper_beam_size, whisper_threads, whisper_initial_prompt,
-                session_timeout_sec, mqtt_publisher,
+                session_timeout_sec,
                 whisper_temperature, whisper_temperature_inc,
                 whisper_no_speech_thold, whisper_logprob_thold
             );
@@ -454,20 +437,6 @@ int main(int argc, char* argv[]) {
         auth_config.timeout_seconds   = config.auth_api_timeout;
         auto auth_manager = std::make_shared<AuthManager>(auth_config);
 
-        std::shared_ptr<MQTTPublisher> mqtt_publisher;
-        if (!config.mqtt_url.empty()) {
-            auto mqtt_cfg = MQTTConfig::fromUrl(config.mqtt_url, config.mqtt_topic, config.mqtt_client_id);
-            mqtt_publisher = std::make_shared<MQTTPublisher>(mqtt_cfg);
-            if (mqtt_publisher->connect()) {
-                Log::info("MQTT: connecting to " + config.mqtt_url + " topic=" + config.mqtt_topic);
-            } else {
-                Log::warn("MQTT: connect() failed, publishing disabled");
-                mqtt_publisher.reset();
-            }
-        } else {
-            Log::info("MQTT: disabled");
-        }
-
         Log::info("Listening on " + std::string(use_ssl ? "wss" : "ws") +
                   "://" + config.bind_address + ":" + std::to_string(config.port));
 
@@ -525,8 +494,7 @@ int main(int argc, char* argv[]) {
                             config.whisper_temperature_inc,
                             config.whisper_no_speech_thold,
                             config.whisper_logprob_thold,
-                            ssl_ctx,
-                            mqtt_publisher);
+                            ssl_ctx);
             } catch (const std::exception& e) {
                 limiter->release(client_ip);
                 Log::error("Failed to spawn session thread: " + std::string(e.what()) +
