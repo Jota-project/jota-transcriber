@@ -11,3 +11,4 @@ venv/
 *.key
 *.pem
 *.csr
+.worktrees/
