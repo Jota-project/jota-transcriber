@@ -18,8 +18,6 @@
 #include "server/SessionTracker.h"
 #include "AuthManager.h"
 #include "ConnectionGuard.h"
-#include "mqtt/MQTTPublisher.h"
-#include "mqtt/TranscriptionEvent.h"
 #include "log/Log.h"
 #include "utils/HallucinationGuard.h"
 #include "whisper/InferenceLimiter.h"
@@ -41,7 +39,6 @@ public:
         int whisper_threads = 4,
         const std::string& whisper_initial_prompt = "",
         int session_timeout_sec = 30,
-        std::shared_ptr<MQTTPublisher> mqtt_publisher = nullptr,
         float whisper_temperature = 0.2f,
         float whisper_temperature_inc = 0.2f,
         float whisper_no_speech_thold = 0.3f,
@@ -50,12 +47,10 @@ public:
         : ws_(std::move(ws)),
           model_path_(model_path),
           auth_manager_(auth_manager),
-          mqtt_publisher_(mqtt_publisher),
           configured_(false),
           buffer_overflowed_(false),
           last_transcribed_size_(0),
           language_("es"),
-          publish_mqtt_(false),
           whisper_beam_size_(whisper_beam_size),
           whisper_threads_(whisper_threads),
           whisper_initial_prompt_(whisper_initial_prompt),
@@ -184,8 +179,7 @@ private:
             {"config", {
                 {"language", language_},
                 {"sample_rate", 16000},
-                {"beam_size", whisper_beam_size_},
-                {"publish_mqtt", publish_mqtt_}
+                {"beam_size", whisper_beam_size_}
             }}
         };
         sendMessage(msg);
@@ -336,14 +330,6 @@ private:
                 language_ = msg["language"];
             }
 
-            if (msg.contains("publish_mqtt") && msg["publish_mqtt"].is_boolean()) {
-                publish_mqtt_ = msg["publish_mqtt"].get<bool>();
-                if (publish_mqtt_ && !mqtt_publisher_) {
-                    Log::warn("Client requested MQTT publish but MQTT is not configured", session_id_);
-                    publish_mqtt_ = false;
-                }
-            }
-
             // VAD configure (0.0 = disabled, try a safe 0.4 for long silences only if enabled by client)
             float vad_thold = 0.0f;
             if (msg.contains("vad_thold") && msg["vad_thold"].is_number()) {
@@ -382,7 +368,7 @@ private:
             Log::info("Session ready (lang=" + language_ +
                       ", beam=" + std::to_string(whisper_beam_size_) +
                       ", vad=" + std::to_string(vad_thold) +
-                      ", mqtt=" + (publish_mqtt_ ? "on" : "off") + ")", session_id_);
+                      ")", session_id_);
             sendReady();
         }
         catch (std::exception& e) {
@@ -420,13 +406,6 @@ private:
             };
             sendMessage(msg);
 
-            if (publish_mqtt_) {
-                auto event = TranscriptionEvent::make(session_id_, full_transcription_, true, language_);
-                if (!mqtt_publisher_->publishTranscription(event)) {
-                    Log::warn("MQTT publish failed for session", session_id_);
-                }
-            }
-
         try {
             ws_.close(websocket::close_code::normal);
             Log::info("Session closed normally", session_id_);
@@ -456,8 +435,6 @@ private:
     StreamType ws_;
     std::string model_path_;
     std::shared_ptr<AuthManager> auth_manager_;
-    std::shared_ptr<MQTTPublisher> mqtt_publisher_;
-    bool publish_mqtt_;
     std::unique_ptr<StreamingWhisperEngine> engine_;
     std::string session_id_;
     bool configured_;
