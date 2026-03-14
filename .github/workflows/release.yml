@@ -1,0 +1,38 @@
+name: Semantic Release
+
+on:
+  push:
+    branches:
+      - main # Se ejecuta cada vez que integras código en la rama principal
+
+jobs:
+  release:
+    name: Release and Changelog
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Necesario para crear tags y actualizar el changelog
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Necesario para que la herramienta lea todo el historial de commits
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+
+      - name: Install Semantic Release dependencies
+        run: |
+          npm install -g semantic-release \
+          @semantic-release/changelog \
+          @semantic-release/git \
+          @semantic-release/github
+
+      - name: Run Semantic Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx semantic-release
