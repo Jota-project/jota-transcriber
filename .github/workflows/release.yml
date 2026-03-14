@@ -1,0 +1,41 @@
+name: Semantic Release
+
+on:
+  push:
+    branches:
+      - main # Se ejecuta tras el squash merge en la rama principal
+
+jobs:
+  release:
+    name: Release and Changelog
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write 
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 
+          # Importante: Usar el token para que el checkout configure la identidad
+          token: ${{ secrets.RELEASE_TOKEN }} 
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+
+      - name: Install Semantic Release dependencies
+        run: |
+          npm install -g semantic-release \
+          @semantic-release/changelog \
+          @semantic-release/git \
+          @semantic-release/github
+
+      - name: Run Semantic Release
+        env:
+          # Usamos tu PAT con permisos de bypass para saltar la regla de PR
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }} 
+        run: npx semantic-release
