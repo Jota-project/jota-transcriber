@@ -1,5 +1,10 @@
 # Real-Time C++ Transcription Microservice
 
+[![CI State](https://github.com/jota-project/jota-transcriber/actions/workflows/ci.yml/badge.svg)](https://github.com/jota-project/jota-transcriber/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![C++ Standard](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://en.cppreference.com/w/cpp/17)
+[![CUDA Support](https://img.shields.io/badge/CUDA-Ready-green.svg)](https://developer.nvidia.com/cuda-zone)
+
 High-performance real-time audio transcription microservice built with C++17 and [whisper.cpp](https://github.com/ggerganov/whisper.cpp). Clients stream raw PCM audio over WebSocket and receive partial and final transcription results as JSON.
 
 ## Features
