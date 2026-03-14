@@ -1,0 +1,33 @@
+version: 2
+updates:
+  # 1. Actualización de Imágenes de Docker (NVIDIA/CUDA, Boost, etc.)
+  - package-ecosystem: "docker"
+    directory: "/" 
+    schedule:
+      interval: "weekly" # Revisión semanal para no saturar
+    open-pull-requests-limit: 5
+    assignees:
+      - "tu-usuario-de-github" # Reemplaza con tu handle de GitHub
+    labels:
+      - "docker"
+      - "dependencies"
+
+  # 2. Actualización de Submódulos (whisper.cpp)
+  - package-ecosystem: "gitsubmodule"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    assignees:
+      - "tu-usuario-de-github"
+    labels:
+      - "submodule"
+      - "whisper.cpp"
+
+  # 3. GitHub Actions (para mantener ci.yml actualizado)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    assignees:
+      - "tu-usuario-de-github"
