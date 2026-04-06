@@ -251,6 +251,39 @@ TEST_F(StreamingSessionTest, EndWithoutAudio) {
     EXPECT_EQ(trans["text"], ""); // Empty since no audio
 }
 
+// Regression guard for Jota-project/jota-transcriber#27.
+// Verifies that exactly one is_final=true is emitted per session and that
+// it is the very last message — no messages arrive after the final one.
+// The race condition (flushLoop sending after handleEnd) would violate the
+// second assertion when there is enough audio to trigger flushLoop inference.
+TEST_F(StreamingSessionTest, ExactlyOneIsFinalAndIsLastMessage) {
+    auto port = startServer(false);
+    auto client = connect(port);
+
+    client.sendJson({{"type", "config"}, {"language", "es"}});
+    EXPECT_EQ(client.recvJson()["type"], "ready");
+
+    client.sendJson({{"type", "end"}});
+
+    // Drain all messages until the server closes the connection.
+    std::vector<json> msgs;
+    try {
+        while (true) msgs.push_back(client.recvJson());
+    } catch (...) {}
+
+    // Contract 1: exactly one is_final=true
+    int finals = 0;
+    for (const auto& m : msgs) {
+        if (m.contains("is_final") && m["is_final"].get<bool>()) ++finals;
+    }
+    EXPECT_EQ(finals, 1) << "Expected exactly one is_final=true message";
+
+    // Contract 2: is_final=true must be the LAST message (nothing arrives after it)
+    ASSERT_FALSE(msgs.empty());
+    EXPECT_TRUE(msgs.back().contains("is_final") && msgs.back()["is_final"].get<bool>())
+        << "Last message must be is_final=true, but got: " << msgs.back().dump();
+}
+
 TEST_F(StreamingSessionTest, DoubleConfig) {
     auto port = startServer(false);
     auto client = connect(port);

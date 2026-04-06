@@ -9,6 +9,7 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <condition_variable>
 #include <sstream>
 #include <unordered_map>
 #include <nlohmann/json.hpp>
@@ -71,10 +72,7 @@ public:
     }
 
     ~StreamingSession() override {
-        flush_running_ = false;
-        if (flush_thread_.joinable()) {
-            flush_thread_.join();
-        }
+        stopFlushLoop();
         SessionTracker::instance().remove(this);
         releaseModel();
     }
@@ -379,7 +377,14 @@ private:
 
     void handleEnd() {
         Log::info("End-of-stream received, running final transcription", session_id_);
-        
+
+        // Stop flushLoop BEFORE running final inference. This is the fix for the race
+        // condition (Jota-project/jota-transcriber#27): without this join, flushLoop can
+        // wake up and send another message between our sendMessage(is_final=true) and
+        // ws_.close(), or race ws_.close() with a concurrent ws_.write().
+        stopFlushLoop();
+
+        std::string final_text;
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             if (engine_) {
@@ -396,17 +401,23 @@ private:
                 Log::warn("full_transcription_ empty at end-of-session — using raw fallback (all commits were hallucination-filtered)", session_id_);
                 full_transcription_ = raw_transcription_;
             }
+
+            // Copy under the mutex so the read below is not a data race.
+            final_text = full_transcription_;
         }
 
-        Log::info("Final transcription: \"" + full_transcription_ + "\"", session_id_);
-            json msg = {
-                {"type", "transcription"},
-                {"text", full_transcription_},
-                {"is_final", true}
-            };
-            sendMessage(msg);
+        Log::info("Final transcription: \"" + final_text + "\"", session_id_);
+        json msg = {
+            {"type", "transcription"},
+            {"text", final_text},
+            {"is_final", true}
+        };
+        sendMessage(msg);
 
         try {
+            // ws_.close() must be serialized with ws_.write() via write_mutex_.
+            // Beast does not support concurrent close + write on the same stream.
+            std::lock_guard<std::mutex> lock(write_mutex_);
             ws_.close(websocket::close_code::normal);
             Log::info("Session closed normally", session_id_);
         }
@@ -462,11 +473,26 @@ private:
     std::mutex state_mutex_;
     std::thread flush_thread_;
     std::atomic<bool> flush_running_;
+    std::mutex flush_cv_mutex_;
+    std::condition_variable flush_cv_;
     std::chrono::steady_clock::time_point last_audio_time_;
 
     // Sliding window logic
     std::string full_transcription_;     // filtered (hallucinations discarded)
     std::string raw_transcription_;      // unfiltered fallback — used when full_ is empty at handleEnd()
+
+    // Signal flushLoop to stop and wait until it exits. Safe to call multiple times
+    // (flush_thread_.joinable() returns false after the first join).
+    void stopFlushLoop() {
+        {
+            std::lock_guard<std::mutex> lk(flush_cv_mutex_);
+            flush_running_ = false;
+        }
+        flush_cv_.notify_one();
+        if (flush_thread_.joinable()) {
+            flush_thread_.join();
+        }
+    }
 
     void flushLoop() {
         // Handles ALL inference, decoupled from the WebSocket receive loop.
@@ -476,7 +502,11 @@ private:
         const size_t MIN_BUFFER_SAMPLES = 32000; // 2s minimum before first inference
 
         while (flush_running_) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            {
+                std::unique_lock<std::mutex> lk(flush_cv_mutex_);
+                flush_cv_.wait_for(lk, std::chrono::milliseconds(200),
+                                   [this]{ return !flush_running_.load(); });
+            }
             if (!flush_running_) break;
 
             std::unique_lock<std::mutex> lock(state_mutex_, std::defer_lock);
