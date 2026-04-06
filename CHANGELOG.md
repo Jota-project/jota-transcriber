@@ -1,3 +1,10 @@
+## [1.0.1](https://github.com/Jota-project/jota-transcriber/compare/v1.0.0...v1.0.1) (2026-04-06)
+
+
+### Bug Fixes
+
+* eliminar race condition entre flushLoop y handleEnd ([#28](https://github.com/Jota-project/jota-transcriber/issues/28)) ([5c6091e](https://github.com/Jota-project/jota-transcriber/commit/5c6091eaa525b3037b6bd3238930b86bd0632465)), closes [#27](https://github.com/Jota-project/jota-transcriber/issues/27) [#1](https://github.com/Jota-project/jota-transcriber/issues/1) [#2](https://github.com/Jota-project/jota-transcriber/issues/2) [#3](https://github.com/Jota-project/jota-transcriber/issues/3)
+
 # 1.0.0 (2026-03-15)
 
 
