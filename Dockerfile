@@ -42,7 +42,11 @@ RUN mkdir -p src/whisper src/server src/auth src/audio && \
           src/auth/AuthCache.cpp \
           src/audio/AudioDecoder.cpp \
           src/server/MultipartParser.cpp \
-          src/server/HttpRouter.cpp
+          src/server/HttpRouter.cpp \
+          src/server/handlers/HandleHealth.cpp \
+          src/server/handlers/HandleReady.cpp \
+          src/server/handlers/HandleMetrics.cpp \
+          src/server/handlers/HandleTranscribe.cpp
 RUN cmake -B build \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_SERVER=ON \

@@ -50,6 +50,10 @@ if(BUILD_SERVER)
         src/audio/AudioDecoder.cpp
         src/server/MultipartParser.cpp
         src/server/HttpRouter.cpp
+        src/server/handlers/HandleHealth.cpp
+        src/server/handlers/HandleReady.cpp
+        src/server/handlers/HandleMetrics.cpp 
+        src/server/handlers/HandleTranscribe.cpp
     )
 
     target_include_directories(jota-transcriber PRIVATE
