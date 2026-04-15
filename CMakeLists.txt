@@ -49,6 +49,7 @@ if(BUILD_SERVER)
         src/auth/AuthCache.cpp
         src/audio/AudioDecoder.cpp
         src/server/MultipartParser.cpp
+        src/server/HttpRouter.cpp
     )
 
     target_include_directories(jota-transcriber PRIVATE

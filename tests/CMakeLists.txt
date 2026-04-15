@@ -11,11 +11,14 @@ add_executable(unit_tests
     unit/test_streaming_session.cpp
     unit/test_audio_decoder.cpp
     unit/test_multipart_parser.cpp
+    unit/test_http_router.cpp
     # Fuentes del servidor que no tienen dependencias de Boost/OpenSSL
+    ${CMAKE_SOURCE_DIR}/src/audio/AudioDecoder.cpp
     ${CMAKE_SOURCE_DIR}/src/server/ConnectionLimiter.cpp
     ${CMAKE_SOURCE_DIR}/src/server/ConnectionGuard.cpp
     ${CMAKE_SOURCE_DIR}/src/server/AuthManager.cpp
     ${CMAKE_SOURCE_DIR}/src/server/MultipartParser.cpp
+    ${CMAKE_SOURCE_DIR}/src/server/HttpRouter.cpp
     ${CMAKE_SOURCE_DIR}/src/auth/AuthCache.cpp
     ${CMAKE_SOURCE_DIR}/src/auth/ApiAuthClient.cpp 
 )
