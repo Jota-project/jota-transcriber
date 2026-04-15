@@ -9,6 +9,7 @@ add_executable(unit_tests
     unit/test_model_cache.cpp
     unit/test_streaming_whisper_engine.cpp
     unit/test_streaming_session.cpp
+    unit/test_audio_decoder.cpp
     # Fuentes del servidor que no tienen dependencias de Boost/OpenSSL
     ${CMAKE_SOURCE_DIR}/src/server/ConnectionLimiter.cpp
     ${CMAKE_SOURCE_DIR}/src/server/ConnectionGuard.cpp
