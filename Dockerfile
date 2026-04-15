@@ -41,7 +41,8 @@ RUN mkdir -p src/whisper src/server src/auth src/audio && \
           src/auth/ApiAuthClient.cpp \
           src/auth/AuthCache.cpp \
           src/audio/AudioDecoder.cpp \
-          src/server/MultipartParser.cpp
+          src/server/MultipartParser.cpp \
+          src/server/HttpRouter.cpp
 RUN cmake -B build \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_SERVER=ON \

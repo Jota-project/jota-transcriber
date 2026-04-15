@@ -28,7 +28,8 @@ using tcp = boost::asio::ip::tcp;
 namespace websocket = boost::beast::websocket;
 namespace ssl = boost::asio::ssl;
 
-namespace {
+namespace 
+{
 
 // ---------------------------------------------------------------------------
 // .env loader
@@ -148,6 +149,9 @@ ServerConfig configFromEnv() {
     if (auto v = env("SHUTDOWN_TIMEOUT_SEC"); !v.empty())
         cfg.shutdown_timeout_sec = std::stoi(v);
 
+    if (auto v = env("MAX_UPLOAD_BYTES"); !v.empty())
+    cfg.max_upload_bytes = static_cast<size_t>(std::stoull(v));
+
     return cfg;
 }
 
@@ -164,7 +168,8 @@ void printUsage(const char* binary) {
               << " [--whisper-beam-size N] [--whisper-threads N]"
               << " [--max-concurrent-inference N] [--model-cache-ttl N]"
               << " [--whisper-initial-prompt TEXT] [--session-timeout-sec N] [--shutdown-timeout-sec N]"
-              << " [--env-file path]" << std::endl;
+              << " [--env-file path]" 
+              << " [--max-upload-bytes N]" << std::endl;
     std::cout << "All options can also be set via environment variables (or a .env file):" << std::endl;
     std::cout << "  MODEL_PATH, BIND_ADDRESS, PORT," << std::endl;
     std::cout << "  AUTH_TOKEN, AUTH_API_URL, AUTH_API_SECRET, AUTH_CACHE_TTL, AUTH_API_TIMEOUT," << std::endl;
@@ -173,6 +178,7 @@ void printUsage(const char* binary) {
     std::cout << "  MODEL_CACHE_TTL, WHISPER_INITIAL_PROMPT, SESSION_TIMEOUT_SEC, SHUTDOWN_TIMEOUT_SEC," << std::endl;
     std::cout << "  WHISPER_TEMPERATURE, WHISPER_TEMPERATURE_INC," << std::endl;
     std::cout << "  WHISPER_NO_SPEECH_THOLD, WHISPER_LOGPROB_THOLD" << std::endl;
+    std::cout << "  MAX_UPLOAD_BYTES" << std::endl;
     std::cout << "CLI arguments override environment variables." << std::endl;
 }
 
@@ -248,6 +254,9 @@ ServerConfig parseArgs(int argc, char* argv[]) {
         } else if (arg.rfind("--", 0) != 0 &&
                    config.model_path == "third_party/whisper.cpp/models/ggml-base.bin") {
             config.model_path = arg;
+        
+        } else if (arg == "--max-upload-bytes" && i + 1 < argc) {
+        config.max_upload_bytes = static_cast<size_t>(std::stoull(argv[++i]));    
         } else {
             Log::error("Unknown argument: " + arg);
             printUsage(argv[0]);
