@@ -19,6 +19,8 @@ add_executable(unit_tests
 
 find_package(Boost REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LIBAV REQUIRED libavformat libavcodec libavutil libswresample)
 
 # nlohmann_json: fetched by BUILD_SERVER when ON; fetch here when OFF
 if(NOT TARGET nlohmann_json::nlohmann_json)
@@ -38,10 +40,12 @@ target_link_libraries(unit_tests
     OpenSSL::SSL
     OpenSSL::Crypto
     pthread
+    ${LIBAV_LIBRARIES}
 )
 
 target_include_directories(unit_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+    ${LIBAV_INCLUDE_DIRS}
 )
 
 target_compile_definitions(unit_tests PRIVATE
