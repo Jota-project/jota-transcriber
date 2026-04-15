@@ -261,7 +261,7 @@ ServerConfig parseArgs(int argc, char* argv[]) {
             config.model_path = arg;
         
         } else if (arg == "--max-upload-bytes" && i + 1 < argc) {
-        config.max_upload_bytes = static_cast<size_t>(std::stoull(argv[++i]));    
+            config.max_upload_bytes = static_cast<size_t>(std::stoull(argv[++i]));
         } else {
             Log::error("Unknown argument: " + arg);
             printUsage(argv[0]);
@@ -313,19 +313,34 @@ void handleSession(tcp::socket socket,
 
     try {
         boost::beast::flat_buffer buffer;
-        boost::beast::http::request<boost::beast::http::string_body> req;
+        http::request_parser<http::string_body> parser;
+        parser.body_limit(config.max_upload_bytes);
 
         HttpRouter router = buildRouter(config, auth_manager, limiter);
+
+        auto send404 = [](auto& stream, const http::request<http::string_body>& req) {
+            http::response<http::string_body> res{http::status::not_found, req.version()};
+            res.set(http::field::content_type, "application/json");
+            res.body() = R"({"error":{"message":"Not found","type":"not_found"}})";
+            res.prepare_payload();
+            boost::beast::http::write(stream, res);
+        };
 
         if (ssl_ctx) {
             ssl::stream<tcp::socket> ssl_stream(std::move(socket), *ssl_ctx);
             ssl_stream.handshake(ssl::stream_base::server);
-            boost::beast::http::read(ssl_stream, buffer, req);
+            boost::beast::http::read(ssl_stream, buffer, parser);
+            auto req = parser.release();
 
             SendFn send = [&](http::response<http::string_body> res) {
                 boost::beast::http::write(ssl_stream, res);
             };
             if (router.dispatch(req, send, config, auth_manager)) return;
+
+            if (!websocket::is_upgrade(req)) {
+                send404(ssl_stream, req);
+                return;
+            }
 
             websocket::stream<ssl::stream<tcp::socket>> ws(std::move(ssl_stream));
             auto session = std::make_shared<StreamingSession<websocket::stream<ssl::stream<tcp::socket>>>>(
@@ -336,12 +351,18 @@ void handleSession(tcp::socket socket,
                 config.whisper_no_speech_thold, config.whisper_logprob_thold);
             session->run(req);
         } else {
-            boost::beast::http::read(socket, buffer, req);
+            boost::beast::http::read(socket, buffer, parser);
+            auto req = parser.release();
 
             SendFn send = [&](http::response<http::string_body> res) {
                 boost::beast::http::write(socket, res);
             };
             if (router.dispatch(req, send, config, auth_manager)) return;
+
+            if (!websocket::is_upgrade(req)) {
+                send404(socket, req);
+                return;
+            }
 
             websocket::stream<tcp::socket> ws(std::move(socket));
             auto session = std::make_shared<StreamingSession<websocket::stream<tcp::socket>>>(

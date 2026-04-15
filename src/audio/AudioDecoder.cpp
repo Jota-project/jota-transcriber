@@ -13,18 +13,33 @@ extern "C" {
 namespace {
 
 struct ReadState {
-    const uint8_t* ptr;
-    int remaining;
+    const uint8_t* base;
+    size_t         size;
+    size_t         pos;
 };
 
 static int readPacket(void* opaque, uint8_t* buf, int buf_size) {
     auto* s = static_cast<ReadState*>(opaque);
-    int n = std::min(buf_size, s->remaining);
+    int n = static_cast<int>(std::min(static_cast<size_t>(buf_size), s->size - s->pos));
     if (n <= 0) return AVERROR_EOF;
-    memcpy(buf, s->ptr, n);
-    s->ptr       += n;
-    s->remaining -= n;
+    memcpy(buf, s->base + s->pos, n);
+    s->pos += n;
     return n;
+}
+
+static int64_t seekPacket(void* opaque, int64_t offset, int whence) {
+    auto* s = static_cast<ReadState*>(opaque);
+    int direction = whence & ~AVSEEK_FORCE; // strip the flag before switching
+    if (direction == AVSEEK_SIZE)
+        return static_cast<int64_t>(s->size);
+    int64_t new_pos;
+    if      (direction == SEEK_SET) new_pos = offset;
+    else if (direction == SEEK_CUR) new_pos = static_cast<int64_t>(s->pos) + offset;
+    else if (direction == SEEK_END) new_pos = static_cast<int64_t>(s->size) + offset;
+    else return -1;
+    if (new_pos < 0 || new_pos > static_cast<int64_t>(s->size)) return -1;
+    s->pos = static_cast<size_t>(new_pos);
+    return new_pos;
 }
 
 } // namespace
@@ -39,9 +54,9 @@ std::vector<float> AudioDecoder::decode(const std::vector<uint8_t>& data) {
     uint8_t* avio_buf = static_cast<uint8_t*>(av_malloc(AVIO_BUF));
     if (!avio_buf) throw std::runtime_error("AudioDecoder: av_malloc failed");
 
-    ReadState state{data.data(), static_cast<int>(data.size())};
+    ReadState state{data.data(), data.size(), 0};
     AVIOContext* avio_ctx = avio_alloc_context(
-        avio_buf, AVIO_BUF, 0, &state, readPacket, nullptr, nullptr);
+        avio_buf, AVIO_BUF, 0, &state, readPacket, nullptr, seekPacket);
     if (!avio_ctx) {
         av_free(avio_buf);
         throw std::runtime_error("AudioDecoder: avio_alloc_context failed");

@@ -58,15 +58,7 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
         }
     }
 
-    // ── 2. Size limit ─────────────────────────────────────────────────────────
-    if (req.body().size() > config.max_upload_bytes) {
-        send(makeError(http::status::payload_too_large,
-                       "Request body exceeds maximum allowed size",
-                       "invalid_request_error", ver));
-        return;
-    }
-
-    // ── 3. Parse multipart ────────────────────────────────────────────────────
+    // ── 2. Parse multipart ────────────────────────────────────────────────────
     std::string content_type = std::string(req[http::field::content_type]);
     std::string boundary = MultipartParser::extractBoundary(content_type);
     if (boundary.empty()) {
