@@ -12,6 +12,7 @@ add_executable(unit_tests
     unit/test_audio_decoder.cpp
     unit/test_multipart_parser.cpp
     unit/test_http_router.cpp
+    unit/test_handle_transcribe.cpp
     # Fuentes del servidor que no tienen dependencias de Boost/OpenSSL
     ${CMAKE_SOURCE_DIR}/src/audio/AudioDecoder.cpp
     ${CMAKE_SOURCE_DIR}/src/server/ConnectionLimiter.cpp
@@ -20,7 +21,8 @@ add_executable(unit_tests
     ${CMAKE_SOURCE_DIR}/src/server/MultipartParser.cpp
     ${CMAKE_SOURCE_DIR}/src/server/HttpRouter.cpp
     ${CMAKE_SOURCE_DIR}/src/auth/AuthCache.cpp
-    ${CMAKE_SOURCE_DIR}/src/auth/ApiAuthClient.cpp 
+    ${CMAKE_SOURCE_DIR}/src/auth/ApiAuthClient.cpp
+    ${CMAKE_SOURCE_DIR}/src/server/handlers/HandleTranscribe.cpp
 )
 
 find_package(Boost REQUIRED)
