@@ -24,15 +24,20 @@ namespace {
 bool parseUrl(const std::string& url,
               std::string& scheme,
               std::string& host,
+              std::string& port,
               std::string& base_path) {
-    static const std::regex re(R"(^(https?)://([^/]+)(/.*)?)");
+    static const std::regex re(R"(^(https?)://(\[[^\]]+\]|[^/:]+)(?::([0-9]+))?(/.*)?)");
     std::smatch m;
     if (!std::regex_match(url, m, re)) {
         return false;
     }
     scheme    = m[1].str();
     host      = m[2].str();
-    base_path = m[3].matched ? m[3].str() : "";
+    port      = m[3].matched ? m[3].str() : "";
+    base_path = m[4].matched ? m[4].str() : "";
+    if (port.empty()) {
+        port = (scheme == "https") ? "443" : "80";
+    }
     return true;
 }
 
@@ -55,26 +60,30 @@ ApiAuthClient::ApiAuthClient(const ApiAuthConfig& config)
     : config_(config) {}
 
 AuthResult ApiAuthClient::validate(const std::string& client_key) {
-    std::string scheme, host, base_path;
-    if (!parseUrl(config_.api_base_url, scheme, host, base_path)) {
+    std::string scheme, host, port, base_path;
+    if (!parseUrl(config_.api_base_url, scheme, host, port, base_path)) {
         Log::error("Invalid auth API URL: " + config_.api_base_url);
         return AuthResult::ApiUnavailable;
     }
 
-    const bool        use_tls = (scheme == "https");
-    const std::string port    = use_tls ? "443" : "80";
-    const std::string target  = base_path + "/client";
-    const std::string masked  = Log::maskKey(client_key);
+    const bool        use_tls      = (scheme == "https");
+    const std::string target       = base_path + "/client";
+    const std::string masked       = Log::maskKey(client_key);
+    const std::string host_header  = host + ":" + port;
+    std::string       resolver_host = host;
+    if (!resolver_host.empty() && resolver_host.front() == '[' && resolver_host.back() == ']') {
+        resolver_host = resolver_host.substr(1, resolver_host.size() - 2);
+    }
 
     Log::debug("Auth API GET " + config_.api_base_url + "/client key=" + masked);
 
     try {
         asio::io_context ioc;
         tcp::resolver    resolver(ioc);
-        auto const       endpoint = resolveEndpoint(resolver, host, port);
+        auto const       endpoint = resolveEndpoint(resolver, resolver_host, port);
 
         http::request<http::empty_body> req{http::verb::get, target, 11};
-        req.set(http::field::host, host);
+        req.set(http::field::host, host_header);
         req.set(http::field::user_agent, "TranscriptionServer/1.0");
         req.set(http::field::authorization, "Bearer " + config_.api_secret_key);
         req.set("X-API-Key", client_key);
