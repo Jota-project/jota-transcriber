@@ -5,6 +5,8 @@ bin/
 models/
 *.wav
 venv/
+# Feature docs (superpowers — internal planning, not for repo)
+docs/superpowers/
 
 # SSL/TLS Certificates and Keys
 *.crt

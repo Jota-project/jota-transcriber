@@ -9,6 +9,7 @@
 #include <whisper.h>
 #include <nlohmann/json.hpp>
 #include <boost/beast/version.hpp>
+#include <unordered_set>
 
 using json = nlohmann::json;
 namespace http = boost::beast::http;
@@ -91,6 +92,20 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
         return;
     }
 
+    // ── 3b. response_format ───────────────────────────────────────────────────
+    std::string response_format = "json";
+    if (parts.count("response_format")) {
+        response_format.assign(parts.at("response_format").data.begin(),
+                               parts.at("response_format").data.end());
+    }
+    static const std::unordered_set<std::string> kSupportedFormats{"json", "text", "verbose_json"};
+    if (!kSupportedFormats.count(response_format)) {
+        send(makeError(http::status::bad_request,
+                       "response_format '" + response_format + "' is not supported. "
+                       "Supported values: json, text, verbose_json",
+                       "invalid_request_error", ver));
+        return;
+    }
     // ── 4. Decode audio ───────────────────────────────────────────────────────
     std::vector<float> pcm;
     try {
@@ -122,6 +137,21 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
     }
 
     // ── 7. Transcribe ─────────────────────────────────────────────────────────
+    // Declared before guard so they're accessible when formatting the response below.
+    struct Segment {
+        float       start;
+        float       end;
+        std::string text;
+        float       no_speech_prob;
+    };
+    std::vector<Segment> segments;
+
+    std::string language = "auto";
+    if (parts.count("language")) {
+        language.assign(parts.at("language").data.begin(),
+                        parts.at("language").data.end());
+    }
+
     std::string text;
     {
         InferenceLimiter::Guard guard;
@@ -196,17 +226,59 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
         int n = whisper_full_n_segments_from_state(state);
         for (int i = 0; i < n; ++i) {
             const char* seg = whisper_full_get_segment_text_from_state(state, i);
-            if (seg) text += seg;
+            if (!seg) continue;
+            if (response_format == "verbose_json") {
+                int64_t t0  = whisper_full_get_segment_t0_from_state(state, i);
+                int64_t t1  = whisper_full_get_segment_t1_from_state(state, i);
+                float   nsp = whisper_full_get_segment_no_speech_prob_from_state(state, i);
+                segments.push_back({t0 / 100.0f, t1 / 100.0f, seg, nsp});
+            }
+            text += seg;
         }
 
         whisper_free_state(state);
     }
 
     ModelCache::instance().release();
-
     Log::info("HandleTranscribe: transcribed " + std::to_string(pcm.size()) +
-              " samples → " + std::to_string(text.size()) + " chars");
+            " samples → " + std::to_string(text.size()) + " chars"
+                + " format=" + response_format);
 
-    json response = {{"text", text}};
-    send(makeJson(http::status::ok, response.dump(), ver));
+    if (response_format == "text") {
+        auto first = text.find_first_not_of(" \t\r\n");
+        std::string trimmed = (first == std::string::npos) ? "" : text.substr(first);
+        http::response<http::string_body> res;
+        res.version(ver);
+        res.result(http::status::ok);
+        res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
+        res.set(http::field::content_type, "text/plain; charset=utf-8");
+        res.body() = trimmed;
+        res.prepare_payload();
+        send(res);
+        return;
+    }
+
+    if (response_format == "json") {
+        send(makeJson(http::status::ok, json{{"text", text}}.dump(), ver));
+        return;
+    }
+
+    // verbose_json
+    json segs = json::array();
+    for (const auto& s : segments) {
+        segs.push_back({
+            {"start",          s.start},
+            {"end",            s.end},
+            {"text",           s.text},
+            {"no_speech_prob", s.no_speech_prob}
+        });
+    }
+    json vj = {
+        {"task",     "transcribe"},
+        {"language", language},
+        {"duration", segments.empty() ? 0.0f : segments.back().end},
+        {"text",     text},
+        {"segments", segs}
+    };
+    send(makeJson(http::status::ok, vj.dump(), ver));
 }

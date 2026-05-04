@@ -52,6 +52,28 @@ static std::string makeMultipartBody(const std::string& boundary,
     return body;
 }
 
+static std::string makeMultipartBodyWithFormat(const std::string& boundary,
+                                                const std::vector<uint8_t>& audio,
+                                                const std::string& response_format,
+                                                const std::string& language = "") {
+    std::string body = "--" + boundary + "\r\n"
+        "Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n"
+        "Content-Type: audio/wav\r\n\r\n";
+    body.append(reinterpret_cast<const char*>(audio.data()), audio.size());
+    body += "\r\n--" + boundary + "\r\n"
+        "Content-Disposition: form-data; name=\"model\"\r\n\r\nwhisper-1\r\n";
+    body += "--" + boundary + "\r\n"
+        "Content-Disposition: form-data; name=\"response_format\"\r\n\r\n" +
+        response_format + "\r\n";
+    if (!language.empty()) {
+        body += "--" + boundary + "\r\n"
+            "Content-Disposition: form-data; name=\"language\"\r\n\r\n" +
+            language + "\r\n";
+    }
+    body += "--" + boundary + "--\r\n";
+    return body;
+}
+
 class HandleTranscribeTest : public ::testing::Test {
 protected:
     ServerConfig config;
@@ -127,4 +149,121 @@ TEST_F(HandleTranscribeTest, ReturnsBadRequestForGarbageAudio) {
     }, config, no_auth);
 
     EXPECT_EQ(captured_res.result(), http::status::bad_request);
+}
+
+TEST_F(HandleTranscribeTest, ReturnsBadRequestForUnsupportedFormatSrt) {
+    auto audio = makeSilentWav(0.5f);
+    auto body  = makeMultipartBodyWithFormat("bnd", audio, "srt");
+
+    http::request<http::string_body> req{http::verb::post, "/v1/audio/transcriptions", 11};
+    req.set(http::field::content_type, "multipart/form-data; boundary=bnd");
+    req.body() = body;
+    req.prepare_payload();
+
+    http::response<http::string_body> res;
+    HandleTranscribe::handle(req, [&](http::response<http::string_body> r) { res = std::move(r); },
+                             config, no_auth);
+
+    EXPECT_EQ(res.result(), http::status::bad_request);
+    EXPECT_NE(res.body().find("srt"), std::string::npos);
+    EXPECT_NE(res.body().find("not supported"), std::string::npos);
+}
+
+TEST_F(HandleTranscribeTest, ReturnsBadRequestForUnsupportedFormatVtt) {
+    auto audio = makeSilentWav(0.5f);
+    auto body  = makeMultipartBodyWithFormat("bnd", audio, "vtt");
+
+    http::request<http::string_body> req{http::verb::post, "/v1/audio/transcriptions", 11};
+    req.set(http::field::content_type, "multipart/form-data; boundary=bnd");
+    req.body() = body;
+    req.prepare_payload();
+
+    http::response<http::string_body> res;
+    HandleTranscribe::handle(req, [&](http::response<http::string_body> r) { res = std::move(r); },
+                             config, no_auth);
+
+    EXPECT_EQ(res.result(), http::status::bad_request);
+    EXPECT_NE(res.body().find("vtt"), std::string::npos);
+}
+
+TEST_F(HandleTranscribeTest, ReturnsBadRequestForUnknownFormat) {
+    auto audio = makeSilentWav(0.5f);
+    auto body  = makeMultipartBodyWithFormat("bnd", audio, "banana");
+
+    http::request<http::string_body> req{http::verb::post, "/v1/audio/transcriptions", 11};
+    req.set(http::field::content_type, "multipart/form-data; boundary=bnd");
+    req.body() = body;
+    req.prepare_payload();
+
+    http::response<http::string_body> res;
+    HandleTranscribe::handle(req, [&](http::response<http::string_body> r) { res = std::move(r); },
+                             config, no_auth);
+
+    EXPECT_EQ(res.result(), http::status::bad_request);
+    EXPECT_NE(res.body().find("banana"), std::string::npos);
+}
+
+TEST_F(HandleTranscribeTest, ResponseFormatTextReturnsPlainText) {
+    auto audio = makeSilentWav(0.5f);
+    auto body  = makeMultipartBodyWithFormat("bnd", audio, "text", "en");
+
+    http::request<http::string_body> req{http::verb::post, "/v1/audio/transcriptions", 11};
+    req.set(http::field::content_type, "multipart/form-data; boundary=bnd");
+    req.body() = body;
+    req.prepare_payload();
+
+    http::response<http::string_body> res;
+    HandleTranscribe::handle(req, [&](http::response<http::string_body> r) { res = std::move(r); },
+                             config, no_auth);
+
+    EXPECT_EQ(res.result(), http::status::ok);
+    // Content-Type must be text/plain (not application/json)
+    EXPECT_NE(std::string(res[http::field::content_type]).find("text/plain"), std::string::npos);
+    // Body must not start with '{' (not JSON)
+    const std::string& b = res.body();
+    EXPECT_TRUE(b.empty() || b.front() != '{')
+        << "Expected plain text, got: " << b;
+    // No leading whitespace
+    EXPECT_TRUE(b.empty() || b.front() != ' ')
+        << "Expected trimmed text, got leading space";
+}
+
+TEST_F(HandleTranscribeTest, ResponseFormatVerboseJsonHasSegmentsKey) {
+    auto audio = makeSilentWav(0.5f);
+    auto body  = makeMultipartBodyWithFormat("bnd", audio, "verbose_json", "en");
+
+    http::request<http::string_body> req{http::verb::post, "/v1/audio/transcriptions", 11};
+    req.set(http::field::content_type, "multipart/form-data; boundary=bnd");
+    req.body() = body;
+    req.prepare_payload();
+
+    http::response<http::string_body> res;
+    HandleTranscribe::handle(req, [&](http::response<http::string_body> r) { res = std::move(r); },
+                             config, no_auth);
+
+    EXPECT_EQ(res.result(), http::status::ok);
+    EXPECT_NE(std::string(res[http::field::content_type]).find("application/json"), std::string::npos);
+    EXPECT_NE(res.body().find("\"segments\""), std::string::npos);
+    EXPECT_NE(res.body().find("\"task\""), std::string::npos);
+    EXPECT_NE(res.body().find("\"duration\""), std::string::npos);
+    EXPECT_NE(res.body().find("\"text\""), std::string::npos);
+}
+
+TEST_F(HandleTranscribeTest, NoResponseFormatFieldDefaultsToJson) {
+    // makeMultipartBody (the original helper) sends no response_format field
+    auto audio = makeSilentWav(0.5f);
+    auto body  = makeMultipartBody("bnd", audio, "en");
+
+    http::request<http::string_body> req{http::verb::post, "/v1/audio/transcriptions", 11};
+    req.set(http::field::content_type, "multipart/form-data; boundary=bnd");
+    req.body() = body;
+    req.prepare_payload();
+
+    http::response<http::string_body> res;
+    HandleTranscribe::handle(req, [&](http::response<http::string_body> r) { res = std::move(r); },
+                             config, no_auth);
+
+    EXPECT_EQ(res.result(), http::status::ok);
+    EXPECT_NE(std::string(res[http::field::content_type]).find("application/json"), std::string::npos);
+    EXPECT_NE(res.body().find("\"text\""), std::string::npos);
 }

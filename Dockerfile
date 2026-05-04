@@ -1,5 +1,5 @@
 # Build Stage
-FROM nvidia/cuda:12.3.1-devel-ubuntu22.04 AS builder
+FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -31,7 +31,7 @@ COPY third_party/ third_party/
 COPY CMakeLists.txt .
 # CMake verifica existencia de fuentes en configure; crear stubs vacíos para
 # que la configuración pase sin necesitar src/ todavía (se sobreescriben luego).
-RUN mkdir -p src/whisper src/server src/auth src/audio && \
+RUN mkdir -p src/whisper src/server src/server/handlers src/auth src/audio && \
     touch src/whisper/StreamingWhisperEngine.cpp \
           src/server.cpp \
           src/server/StreamingSession.cpp \
@@ -71,7 +71,7 @@ RUN cmake -B build \
 RUN cmake --build build --target jota-transcriber -j$(nproc)
 
 # Runtime Stage
-FROM nvidia/cuda:12.3.1-runtime-ubuntu22.04 AS runtime
+FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 
