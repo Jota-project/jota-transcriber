@@ -10,6 +10,9 @@
 #include <nlohmann/json.hpp>
 #include <boost/beast/version.hpp>
 #include <unordered_set>
+#include <sstream>
+#include <iomanip>
+#include <ctime>
 
 using json = nlohmann::json;
 namespace http = boost::beast::http;
@@ -92,6 +95,14 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
         return;
     }
 
+    // ── 3. Check body size ────────────────────────────────────────────────────
+    if (req.body().size() > config.max_upload_bytes) {
+        send(makeError(http::status::payload_too_large,
+                       "Request body exceeds maximum upload size",
+                       "payload_too_large_error", ver));
+        return;
+    }
+
     // ── 3b. response_format ───────────────────────────────────────────────────
     std::string response_format = "json";
     if (parts.count("response_format")) {
@@ -152,6 +163,12 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
                         parts.at("language").data.end());
     }
 
+    std::string task = "transcribe";
+    if (parts.count("task")) {
+        task.assign(parts.at("task").data.begin(),
+                    parts.at("task").data.end());
+    }
+
     std::string text;
     {
         InferenceLimiter::Guard guard;
@@ -164,13 +181,7 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
             return;
         }
 
-        // Determine language
-        std::string language = "auto";
-        if (parts.count("language")) {
-            language.assign(parts.at("language").data.begin(),
-                            parts.at("language").data.end());
-        }
-
+        // Determine language (already extracted above)
         whisper_full_params params = (config.whisper_beam_size > 1)
             ? whisper_full_default_params(WHISPER_SAMPLING_BEAM_SEARCH)
             : whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
@@ -181,7 +192,7 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
         params.print_timestamps = false;
         params.print_realtime   = false;
         params.print_special    = false;
-        params.translate        = false;
+        params.translate        = (task == "translate");
         params.no_context       = false; // context helps for full-file transcription
         params.suppress_blank   = true;
         params.suppress_nst     = true;
@@ -206,7 +217,14 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
             try {
                 std::string t(parts.at("temperature").data.begin(),
                               parts.at("temperature").data.end());
-                params.temperature = std::stof(t);
+                float val = std::stof(t);
+                if (val < 0.0f || val > 1.0f) {
+                    send(makeError(http::status::bad_request,
+                                   "temperature must be between 0.0 and 1.0",
+                                   "invalid_request_error", ver));
+                    return;
+                }
+                params.temperature = val;
             } catch (...) { /* ignore invalid value, use default */ }
         }
 
@@ -273,12 +291,25 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
             {"no_speech_prob", s.no_speech_prob}
         });
     }
+
+    // Generate id and timestamp
+    std::stringstream ss;
+    ss << "transcribe-" << std::hex << std::setw(16) << std::setfill('0') << rand();
+    std::string id = ss.str();
+
+    std::time_t now = std::time(nullptr);
+    char buf[64];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", std::gmtime(&now));
+
+
     json vj = {
-        {"task",     "transcribe"},
-        {"language", language},
-        {"duration", segments.empty() ? 0.0f : segments.back().end},
-        {"text",     text},
-        {"segments", segs}
+        {"id",         id},
+        {"created_at",  std::string(buf)},
+        {"task",       task},
+        {"language",   language},
+        {"duration",   segments.empty() ? 0.0f : segments.back().end},
+        {"text",       text},
+        {"segments",   segs}
     };
     send(makeJson(http::status::ok, vj.dump(), ver));
 }
