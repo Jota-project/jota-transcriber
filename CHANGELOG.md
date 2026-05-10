@@ -1,3 +1,10 @@
+# [1.1.0](https://github.com/Jota-project/jota-transcriber/compare/v1.0.1...v1.1.0) (2026-05-10)
+
+
+### Features
+
+* add POST /v1/audio/transcriptions (OpenAI-compatible) ([#40](https://github.com/Jota-project/jota-transcriber/issues/40)) ([43c2e47](https://github.com/Jota-project/jota-transcriber/commit/43c2e476e2c5d71017d3e75c80b7934c019aaaba)), closes [#31](https://github.com/Jota-project/jota-transcriber/issues/31) [#32](https://github.com/Jota-project/jota-transcriber/issues/32) [#37](https://github.com/Jota-project/jota-transcriber/issues/37)
+
 ## [1.0.1](https://github.com/Jota-project/jota-transcriber/compare/v1.0.0...v1.0.1) (2026-04-06)
 
 
