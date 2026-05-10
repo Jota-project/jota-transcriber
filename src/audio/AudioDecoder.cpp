@@ -176,7 +176,15 @@ std::vector<float> AudioDecoder::decode(const std::vector<uint8_t>& data) {
 
     while (av_read_frame(fmt_ctx, pkt) >= 0) {
         if (pkt->stream_index == audio_idx) {
-            avcodec_send_packet(codec_ctx, pkt);
+            int ret = avcodec_send_packet(codec_ctx, pkt);
+            if (ret == AVERROR(EAGAIN)) {
+                // Decoder buffer full — drain pending frames before retrying
+                while (avcodec_receive_frame(codec_ctx, frame) == 0) {
+                    drain_swr(frame);
+                    av_frame_unref(frame);
+                }
+                avcodec_send_packet(codec_ctx, pkt);
+            }
             while (avcodec_receive_frame(codec_ctx, frame) == 0) {
                 drain_swr(frame);
                 av_frame_unref(frame);
