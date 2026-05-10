@@ -20,7 +20,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            libboost-dev libssl-dev
+            libboost-dev libssl-dev \
+            libavformat-dev libavcodec-dev libavutil-dev libswresample-dev
 
       - name: Configure (tests only, no server)
         run: |
