@@ -13,6 +13,7 @@
 #include <sstream>
 #include <iomanip>
 #include <ctime>
+#include <random>
 
 using json = nlohmann::json;
 namespace http = boost::beast::http;
@@ -303,14 +304,18 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
         });
     }
 
-    // Generate id and timestamp
+    // Generate id (thread-safe via thread_local RNG)
+    static thread_local std::mt19937_64 rng(std::random_device{}());
     std::stringstream ss;
-    ss << "transcribe-" << std::hex << std::setw(16) << std::setfill('0') << rand();
+    ss << "transcribe-" << std::hex << std::setw(16) << std::setfill('0') << rng();
     std::string id = ss.str();
 
+    // Format timestamp (thread-safe via gmtime_r)
     std::time_t now = std::time(nullptr);
+    struct tm tm_buf{};
+    gmtime_r(&now, &tm_buf);
     char buf[64];
-    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", std::gmtime(&now));
+    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm_buf);
 
 
     json vj = {
