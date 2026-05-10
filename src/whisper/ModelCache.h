@@ -196,7 +196,7 @@ private:
         }
     }
 
-    void cancelUnloadLocked() {
+    void cancelUnloadLocked() { // caller holds mutex_
         if (unload_pending_) {
             unload_pending_ = false;
             cv_.notify_all();
@@ -230,6 +230,6 @@ private:
     int ref_count_ = 0;
     int ttl_seconds_ = 300; // default 5 minutes
     bool unload_pending_ = false; // always accessed under mutex_
-    bool shutdown_ = false;       // set in destructor under mutex_
+    bool shutdown_ = false;       // set true in destructor; signals timer task to exit without unloading
     std::future<void> unload_future_;
 };
