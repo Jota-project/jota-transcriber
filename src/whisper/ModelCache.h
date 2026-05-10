@@ -139,6 +139,8 @@ public:
 
     /**
      * @brief RAII guard that acquires the model on construction and releases on destruction.
+     *
+     * Non-movable: use std::optional<Guard> with emplace() for deferred construction.
      */
     class Guard {
     public:
@@ -148,6 +150,7 @@ public:
         whisper_context* ctx() const { return ctx_; }
         Guard(const Guard&) = delete;
         Guard& operator=(const Guard&) = delete;
+        Guard(Guard&&) = delete;
     private:
         whisper_context* ctx_;
     };

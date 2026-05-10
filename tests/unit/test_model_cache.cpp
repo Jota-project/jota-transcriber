@@ -102,3 +102,14 @@ TEST_F(ModelCacheTest, GuardReleasesOnExceptionPath) {
     } catch (...) {}
     EXPECT_EQ(ModelCache::instance().refCount(), 0);
 }
+
+// Standalone test — runs even when the model file is absent.
+// Verifies that a failed Guard construction (acquire throws) does not call
+// release(), keeping the ref count unchanged. This documents the C++ rule
+// that destructors only run for fully-constructed objects.
+TEST(ModelCacheGuardNoModel, ConstructionThrowDoesNotCallRelease) {
+    ModelCache::instance().forceUnload();
+    int count_before = ModelCache::instance().refCount();
+    EXPECT_THROW(ModelCache::Guard("/nonexistent/model.bin"), std::runtime_error);
+    EXPECT_EQ(ModelCache::instance().refCount(), count_before);
+}
