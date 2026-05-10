@@ -105,7 +105,19 @@ std::vector<float> AudioDecoder::decode(const std::vector<uint8_t>& data) {
     }
 
     AVCodecContext* codec_ctx = avcodec_alloc_context3(codec);
-    avcodec_parameters_to_context(codec_ctx, cpar);
+    if (!codec_ctx) {
+        avformat_close_input(&fmt_ctx);
+        av_freep(&avio_ctx->buffer);
+        avio_context_free(&avio_ctx);
+        throw std::runtime_error("AudioDecoder: avcodec_alloc_context3 failed");
+    }
+    if (avcodec_parameters_to_context(codec_ctx, cpar) < 0) {
+        avcodec_free_context(&codec_ctx);
+        avformat_close_input(&fmt_ctx);
+        av_freep(&avio_ctx->buffer);
+        avio_context_free(&avio_ctx);
+        throw std::runtime_error("AudioDecoder: avcodec_parameters_to_context failed");
+    }
     if (avcodec_open2(codec_ctx, codec, nullptr) < 0) {
         avcodec_free_context(&codec_ctx);
         avformat_close_input(&fmt_ctx);
