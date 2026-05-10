@@ -1,8 +1,9 @@
 #pragma once
 #include <string>
 #include <mutex>
-#include <thread>
-#include <atomic>
+#include <condition_variable>
+#include <future>
+#include <chrono>
 #include <functional>
 #include <whisper.h>
 #include "log/Log.h"
@@ -160,7 +161,15 @@ public:
     ModelCache& operator=(const ModelCache&) = delete;
 
     ~ModelCache() {
-        cancelUnloadLocked();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            shutdown_ = true;
+            unload_pending_ = false;
+        }
+        cv_.notify_all();
+        if (unload_future_.valid())
+            unload_future_.get();
+        // ctx_ is safe to access now: timer task has exited
         if (ctx_) {
             whisper_free(ctx_);
             ctx_ = nullptr;
@@ -181,8 +190,9 @@ private:
     }
 
     void cancelUnloadLocked() {
-        if (unload_pending_.exchange(false)) {
-            // The timer thread will check unload_pending_ and skip the unload
+        if (unload_pending_) {
+            unload_pending_ = false;
+            cv_.notify_all();
         }
     }
 
@@ -190,22 +200,24 @@ private:
         unload_pending_ = true;
         int ttl = ttl_seconds_;
 
-        // Detach a lightweight timer thread
-        std::thread([this, ttl]() {
-            std::this_thread::sleep_for(std::chrono::seconds(ttl));
-
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (unload_pending_ && ref_count_ == 0) {
+        unload_future_ = std::async(std::launch::async, [this, ttl]() {
+            std::unique_lock<std::mutex> lock(mutex_);
+            cv_.wait_for(lock, std::chrono::seconds(ttl),
+                         [this]() { return !unload_pending_ || shutdown_; });
+            if (unload_pending_ && !shutdown_) {
                 unloadLocked();
                 unload_pending_ = false;
             }
-        }).detach();
+        });
     }
 
     mutable std::mutex mutex_;
+    std::condition_variable cv_;
     whisper_context* ctx_ = nullptr;
     std::string loaded_path_;
     int ref_count_ = 0;
     int ttl_seconds_ = 300; // default 5 minutes
-    std::atomic<bool> unload_pending_{false};
+    bool unload_pending_ = false; // always accessed under mutex_
+    bool shutdown_ = false;       // set in destructor under mutex_
+    std::future<void> unload_future_;
 };
