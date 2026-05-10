@@ -145,7 +145,14 @@ std::vector<float> AudioDecoder::decode(const std::vector<uint8_t>& data) {
     av_opt_set_int(swr,        "out_sample_rate", 16000,                  0);
     av_opt_set_sample_fmt(swr, "in_sample_fmt",   codec_ctx->sample_fmt,  0);
     av_opt_set_sample_fmt(swr, "out_sample_fmt",  AV_SAMPLE_FMT_S16,      0);
-    swr_init(swr);
+    if (swr_init(swr) < 0) {
+        swr_free(&swr);
+        avcodec_free_context(&codec_ctx);
+        avformat_close_input(&fmt_ctx);
+        av_freep(&avio_ctx->buffer);
+        avio_context_free(&avio_ctx);
+        throw std::runtime_error("AudioDecoder: swr_init failed");
+    }
 
     // ── Decode + resample ─────────────────────────────────────────────────────
     AVPacket* pkt   = av_packet_alloc();
