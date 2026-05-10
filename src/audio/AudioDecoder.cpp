@@ -128,7 +128,7 @@ std::vector<float> AudioDecoder::decode(const std::vector<uint8_t>& data) {
 
     // ── Resampler → 16 kHz mono s16 ──────────────────────────────────────────
     SwrContext* swr = swr_alloc();
-#if LIBAVCODEC_VERSION_MAJOR > 60
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(59, 37, 100)
     AVChannelLayout out_layout = AV_CHANNEL_LAYOUT_MONO;
     av_opt_set_chlayout(swr, "in_chlayout",  &codec_ctx->ch_layout, 0);
     av_opt_set_chlayout(swr, "out_chlayout", &out_layout, 0);
