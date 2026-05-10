@@ -257,7 +257,7 @@ ServerConfig parseArgs(int argc, char* argv[]) {
         } else if (arg == "--thread-safe") {
             // accepted for backwards compatibility
         } else if (arg.rfind("--", 0) != 0 &&
-                   config.model_path == "third_party/whisper.cpp/models/ggml-base.bin") {
+                   config.model_path == ServerConfig{}.model_path) {
             config.model_path = arg;
         
         } else if (arg == "--max-upload-bytes" && i + 1 < argc) {
