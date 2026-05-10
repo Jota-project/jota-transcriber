@@ -1,3 +1,10 @@
+## [1.1.2](https://github.com/Jota-project/jota-transcriber/compare/v1.1.1...v1.1.2) (2026-05-10)
+
+
+### Bug Fixes
+
+* AudioDecoder robustness — null checks, EAGAIN, swr_init, ch_layout version ([#48](https://github.com/Jota-project/jota-transcriber/issues/48)) ([7e0702b](https://github.com/Jota-project/jota-transcriber/commit/7e0702b4fb0fde062b43acaaa261fd239ece1b9d))
+
 ## [1.1.1](https://github.com/Jota-project/jota-transcriber/compare/v1.1.0...v1.1.1) (2026-05-10)
 
 
