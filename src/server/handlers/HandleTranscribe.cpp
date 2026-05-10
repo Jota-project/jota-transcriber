@@ -219,6 +219,8 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
                               parts.at("temperature").data.end());
                 float val = std::stof(t);
                 if (val < 0.0f || val > 1.0f) {
+                    whisper_free_state(state);
+                    ModelCache::instance().release();
                     send(makeError(http::status::bad_request,
                                    "temperature must be between 0.0 and 1.0",
                                    "invalid_request_error", ver));
