@@ -13,6 +13,7 @@
 #include <sstream>
 #include <iomanip>
 #include <ctime>
+#include <random>
 
 using json = nlohmann::json;
 namespace http = boost::beast::http;
@@ -49,6 +50,13 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
     const unsigned ver = req.version();
 
     // ── 1. Auth ───────────────────────────────────────────────────────────────
+    const bool auth_configured = !config.auth_token.empty() || !config.auth_api_url.empty();
+    if (!auth && auth_configured) {
+        Log::error("HandleTranscribe: auth_manager is null but auth is configured — rejecting");
+        send(makeError(http::status::internal_server_error,
+                       "Internal server error", "server_error", ver));
+        return;
+    }
     if (auth && auth->isAuthEnabled()) {
         std::string auth_header = std::string(req[http::field::authorization]);
         std::string token;
@@ -266,7 +274,9 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
 
     if (response_format == "text") {
         auto first = text.find_first_not_of(" \t\r\n");
-        std::string trimmed = (first == std::string::npos) ? "" : text.substr(first);
+        auto last  = text.find_last_not_of(" \t\r\n");
+        std::string trimmed = (first == std::string::npos) ? ""
+                            : text.substr(first, last - first + 1);
         http::response<http::string_body> res;
         res.version(ver);
         res.result(http::status::ok);
@@ -294,14 +304,18 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
         });
     }
 
-    // Generate id and timestamp
+    // Generate id (thread-safe via thread_local RNG)
+    static thread_local std::mt19937_64 rng(std::random_device{}());
     std::stringstream ss;
-    ss << "transcribe-" << std::hex << std::setw(16) << std::setfill('0') << rand();
+    ss << "transcribe-" << std::hex << std::setw(16) << std::setfill('0') << rng();
     std::string id = ss.str();
 
+    // Format timestamp (thread-safe via gmtime_r)
     std::time_t now = std::time(nullptr);
+    struct tm tm_buf{};
+    gmtime_r(&now, &tm_buf);
     char buf[64];
-    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", std::gmtime(&now));
+    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm_buf);
 
 
     json vj = {

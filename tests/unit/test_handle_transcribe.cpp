@@ -227,6 +227,11 @@ TEST_F(HandleTranscribeTest, ResponseFormatTextReturnsPlainText) {
     // No leading whitespace
     EXPECT_TRUE(b.empty() || b.front() != ' ')
         << "Expected trimmed text, got leading space";
+    // No trailing whitespace
+    EXPECT_TRUE(b.empty() || b.back() != ' ')
+        << "Expected no trailing space, got: '" << b << "'";
+    EXPECT_TRUE(b.empty() || (b.back() != '\n' && b.back() != '\r'))
+        << "Expected no trailing newline, got: '" << b << "'";
 }
 
 TEST_F(HandleTranscribeTest, ResponseFormatVerboseJsonHasSegmentsKey) {
@@ -443,4 +448,43 @@ TEST_F(HandleTranscribeTest, TemperatureValidInRangeReturns200) {
 
     EXPECT_EQ(res.result(), http::status::ok);
     EXPECT_NE(res.body().find("\"text\""), std::string::npos);
+}
+
+TEST_F(HandleTranscribeTest, Returns500WhenAuthManagerIsNullButAuthConfigured) {
+    config.auth_token = "expected-token";  // auth debería estar activa
+
+    auto audio = makeSilentWav(0.5f);
+    auto body  = makeMultipartBody("bnd", audio);
+
+    http::request<http::string_body> req{http::verb::post, "/v1/audio/transcriptions", 11};
+    req.set(http::field::content_type, "multipart/form-data; boundary=bnd");
+    req.body() = body;
+    req.prepare_payload();
+
+    http::response<http::string_body> res;
+    HandleTranscribe::handle(req,
+        [&](http::response<http::string_body> r) { res = std::move(r); },
+        config,
+        nullptr);  // null auth_manager pese a tener config de auth
+
+    EXPECT_EQ(res.result(), http::status::internal_server_error);
+}
+
+TEST_F(HandleTranscribeTest, NullAuthManagerWithNoAuthConfigIsAccepted) {
+    // config.auth_token está vacío por defecto → auth desactivada → null es válido
+    auto audio = makeSilentWav(0.5f);
+    auto body  = makeMultipartBody("bnd", audio, "en");
+
+    http::request<http::string_body> req{http::verb::post, "/v1/audio/transcriptions", 11};
+    req.set(http::field::content_type, "multipart/form-data; boundary=bnd");
+    req.body() = body;
+    req.prepare_payload();
+
+    http::response<http::string_body> res;
+    HandleTranscribe::handle(req,
+        [&](http::response<http::string_body> r) { res = std::move(r); },
+        config,
+        nullptr);  // null auth + sin config → OK
+
+    EXPECT_EQ(res.result(), http::status::ok);
 }
