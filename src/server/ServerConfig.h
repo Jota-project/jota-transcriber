@@ -31,4 +31,5 @@ struct ServerConfig {
     float whisper_logprob_thold = -0.7f;    // log-prob threshold to reject low-confidence segments (-1.0=disabled)
 
     int shutdown_timeout_sec = 10;      // max seconds to wait for sessions to close on SIGINT/SIGTERM
+    size_t max_upload_bytes = 25 * 1024 * 1024; // 25 MB — matches OpenAI limit
 };

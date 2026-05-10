@@ -1,5 +1,5 @@
 # Build Stage
-FROM nvidia/cuda:12.3.1-devel-ubuntu22.04 AS builder
+FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -11,6 +11,10 @@ RUN apt-get update && apt-get install -y \
     libboost-all-dev \
     libssl-dev \
     pkg-config \
+    libavformat-dev \
+    libavcodec-dev \
+    libavutil-dev \
+    libswresample-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -25,6 +29,24 @@ ENV LIBRARY_PATH="/usr/local/cuda/lib64/stubs:${LIBRARY_PATH}"
 # Boost y OpenSSL ya están instalados arriba — los find_package pasan sin error.
 COPY third_party/ third_party/
 COPY CMakeLists.txt .
+# CMake verifica existencia de fuentes en configure; crear stubs vacíos para
+# que la configuración pase sin necesitar src/ todavía (se sobreescriben luego).
+RUN mkdir -p src/whisper src/server src/server/handlers src/auth src/audio && \
+    touch src/whisper/StreamingWhisperEngine.cpp \
+          src/server.cpp \
+          src/server/StreamingSession.cpp \
+          src/server/AuthManager.cpp \
+          src/server/ConnectionLimiter.cpp \
+          src/server/ConnectionGuard.cpp \
+          src/auth/ApiAuthClient.cpp \
+          src/auth/AuthCache.cpp \
+          src/audio/AudioDecoder.cpp \
+          src/server/MultipartParser.cpp \
+          src/server/HttpRouter.cpp \
+          src/server/handlers/HandleHealth.cpp \
+          src/server/handlers/HandleReady.cpp \
+          src/server/handlers/HandleMetrics.cpp \
+          src/server/handlers/HandleTranscribe.cpp
 RUN cmake -B build \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_SERVER=ON \
@@ -49,7 +71,7 @@ RUN cmake -B build \
 RUN cmake --build build --target jota-transcriber -j$(nproc)
 
 # Runtime Stage
-FROM nvidia/cuda:12.3.1-runtime-ubuntu22.04 AS runtime
+FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -60,6 +82,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
     libgomp1 \
     ca-certificates \
+    libavformat58 \
+    libavcodec58 \
+    libavutil56 \
+    libswresample3 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -ms /bin/bash appuser
 

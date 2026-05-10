@@ -29,8 +29,9 @@ target_link_libraries(streaming_whisper PUBLIC
 if(BUILD_SERVER)
     find_package(Boost REQUIRED)
     find_package(OpenSSL REQUIRED)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(LIBAV REQUIRED libavformat libavcodec libavutil libswresample)
 
-    # nlohmann/json para protocolo JSON
     include(FetchContent)
     FetchContent_Declare(json
         GIT_REPOSITORY https://github.com/nlohmann/json.git
@@ -46,12 +47,20 @@ if(BUILD_SERVER)
         src/server/ConnectionGuard.cpp
         src/auth/ApiAuthClient.cpp
         src/auth/AuthCache.cpp
+        src/audio/AudioDecoder.cpp
+        src/server/MultipartParser.cpp
+        src/server/HttpRouter.cpp
+        src/server/handlers/HandleHealth.cpp
+        src/server/handlers/HandleReady.cpp
+        src/server/handlers/HandleMetrics.cpp 
+        src/server/handlers/HandleTranscribe.cpp
     )
 
     target_include_directories(jota-transcriber PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/json/include
         ${Boost_INCLUDE_DIRS}
+        ${LIBAV_INCLUDE_DIRS}
     )
 
     target_link_libraries(jota-transcriber PRIVATE
@@ -62,6 +71,7 @@ if(BUILD_SERVER)
         nlohmann_json::nlohmann_json
         OpenSSL::SSL
         OpenSSL::Crypto
+        ${LIBAV_LIBRARIES}
     )
 endif()
 
