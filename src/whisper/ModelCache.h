@@ -92,20 +92,27 @@ public:
      * acquire() happens within ttl_seconds_, the model is freed.
      */
     void release() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (ref_count_ <= 0) return;
+        std::future<void> old_future;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (ref_count_ <= 0) return;
 
-        --ref_count_;
-        if (ref_count_ == 0) {
-            if (ttl_seconds_ == 0) {
-                // Immediate unload
-                unloadLocked();
-            } else if (ttl_seconds_ > 0) {
-                // Schedule deferred unload
-                scheduleUnloadLocked();
+            --ref_count_;
+            if (ref_count_ == 0) {
+                if (ttl_seconds_ == 0) {
+                    // Immediate unload
+                    unloadLocked();
+                } else if (ttl_seconds_ > 0) {
+                    // Schedule deferred unload; capture old future to drain outside lock
+                    old_future = scheduleUnloadLocked();
+                }
+                // ttl < 0 → keep forever (no-op)
             }
-            // ttl < 0 → keep forever (no-op)
         }
+        // Drain old timer task outside the lock to prevent deadlock:
+        // if old task was notified but hadn't re-acquired mutex yet,
+        // getting the future here (lock released) lets it exit cleanly.
+        if (old_future.valid()) old_future.get();
     }
 
     /**
@@ -196,10 +203,14 @@ private:
         }
     }
 
-    void scheduleUnloadLocked() {
+    std::future<void> scheduleUnloadLocked() {
+        std::future<void> old = std::move(unload_future_);
+        if (old.valid()) {
+            unload_pending_ = false;
+            cv_.notify_all();
+        }
         unload_pending_ = true;
         int ttl = ttl_seconds_;
-
         unload_future_ = std::async(std::launch::async, [this, ttl]() {
             std::unique_lock<std::mutex> lock(mutex_);
             cv_.wait_for(lock, std::chrono::seconds(ttl),
@@ -209,6 +220,7 @@ private:
                 unload_pending_ = false;
             }
         });
+        return old;
     }
 
     mutable std::mutex mutex_;
