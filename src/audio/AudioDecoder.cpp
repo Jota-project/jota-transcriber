@@ -105,7 +105,19 @@ std::vector<float> AudioDecoder::decode(const std::vector<uint8_t>& data) {
     }
 
     AVCodecContext* codec_ctx = avcodec_alloc_context3(codec);
-    avcodec_parameters_to_context(codec_ctx, cpar);
+    if (!codec_ctx) {
+        avformat_close_input(&fmt_ctx);
+        av_freep(&avio_ctx->buffer);
+        avio_context_free(&avio_ctx);
+        throw std::runtime_error("AudioDecoder: avcodec_alloc_context3 failed");
+    }
+    if (avcodec_parameters_to_context(codec_ctx, cpar) < 0) {
+        avcodec_free_context(&codec_ctx);
+        avformat_close_input(&fmt_ctx);
+        av_freep(&avio_ctx->buffer);
+        avio_context_free(&avio_ctx);
+        throw std::runtime_error("AudioDecoder: avcodec_parameters_to_context failed");
+    }
     if (avcodec_open2(codec_ctx, codec, nullptr) < 0) {
         avcodec_free_context(&codec_ctx);
         avformat_close_input(&fmt_ctx);
@@ -116,7 +128,14 @@ std::vector<float> AudioDecoder::decode(const std::vector<uint8_t>& data) {
 
     // ── Resampler → 16 kHz mono s16 ──────────────────────────────────────────
     SwrContext* swr = swr_alloc();
-#if LIBAVCODEC_VERSION_MAJOR > 60
+    if (!swr) {
+        avcodec_free_context(&codec_ctx);
+        avformat_close_input(&fmt_ctx);
+        av_freep(&avio_ctx->buffer);
+        avio_context_free(&avio_ctx);
+        throw std::runtime_error("AudioDecoder: swr_alloc failed");
+    }
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(59, 37, 100)
     AVChannelLayout out_layout = AV_CHANNEL_LAYOUT_MONO;
     av_opt_set_chlayout(swr, "in_chlayout",  &codec_ctx->ch_layout, 0);
     av_opt_set_chlayout(swr, "out_chlayout", &out_layout, 0);
@@ -133,7 +152,14 @@ std::vector<float> AudioDecoder::decode(const std::vector<uint8_t>& data) {
     av_opt_set_int(swr,        "out_sample_rate", 16000,                  0);
     av_opt_set_sample_fmt(swr, "in_sample_fmt",   codec_ctx->sample_fmt,  0);
     av_opt_set_sample_fmt(swr, "out_sample_fmt",  AV_SAMPLE_FMT_S16,      0);
-    swr_init(swr);
+    if (swr_init(swr) < 0) {
+        swr_free(&swr);
+        avcodec_free_context(&codec_ctx);
+        avformat_close_input(&fmt_ctx);
+        av_freep(&avio_ctx->buffer);
+        avio_context_free(&avio_ctx);
+        throw std::runtime_error("AudioDecoder: swr_init failed");
+    }
 
     // ── Decode + resample ─────────────────────────────────────────────────────
     AVPacket* pkt   = av_packet_alloc();
@@ -157,7 +183,15 @@ std::vector<float> AudioDecoder::decode(const std::vector<uint8_t>& data) {
 
     while (av_read_frame(fmt_ctx, pkt) >= 0) {
         if (pkt->stream_index == audio_idx) {
-            avcodec_send_packet(codec_ctx, pkt);
+            int ret = avcodec_send_packet(codec_ctx, pkt);
+            if (ret == AVERROR(EAGAIN)) {
+                // Decoder buffer full — drain pending frames before retrying
+                while (avcodec_receive_frame(codec_ctx, frame) == 0) {
+                    drain_swr(frame);
+                    av_frame_unref(frame);
+                }
+                ret = avcodec_send_packet(codec_ctx, pkt);
+            }
             while (avcodec_receive_frame(codec_ctx, frame) == 0) {
                 drain_swr(frame);
                 av_frame_unref(frame);
