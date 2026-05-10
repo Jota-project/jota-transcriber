@@ -4,6 +4,7 @@
 #include "server/AuthManager.h"
 #include "auth/ApiAuthConfig.h"
 #include "whisper/ModelCache.h"
+#include "whisper/InferenceLimiter.h"
 #include <filesystem>
 #include <cstring>
 #include <cstdint>
@@ -361,4 +362,83 @@ TEST_F(HandleTranscribeTest, VerboseJsonResponseIncludesIdAndCreatedAt) {
     EXPECT_EQ(res.result(), http::status::ok);
     EXPECT_NE(res.body().find("\"id\""), std::string::npos);
     EXPECT_NE(res.body().find("\"created_at\""), std::string::npos);
+}
+
+TEST_F(HandleTranscribeTest, Returns413WhenBodyExceedsMaxUploadBytes) {
+    // Set a tiny limit — any real multipart body with a WAV will exceed it.
+    config.max_upload_bytes = 100;
+
+    auto audio = makeSilentWav(0.5f);
+    auto body  = makeMultipartBody("bnd", audio, "en");
+
+    http::request<http::string_body> req{http::verb::post, "/v1/audio/transcriptions", 11};
+    req.set(http::field::content_type, "multipart/form-data; boundary=bnd");
+    req.body() = body;
+    req.prepare_payload();
+
+    http::response<http::string_body> res;
+    HandleTranscribe::handle(req, [&](http::response<http::string_body> r) { res = std::move(r); },
+                             config, no_auth);
+
+    EXPECT_EQ(res.result(), http::status::payload_too_large);
+}
+
+TEST_F(HandleTranscribeTest, Returns401WhenAuthEnabledAndTokenMissing) {
+    ApiAuthConfig auth_cfg;
+    auth_cfg.static_token = "secret-token";
+    auto with_auth = std::make_shared<AuthManager>(auth_cfg);
+
+    auto audio = makeSilentWav(0.5f);
+    auto body  = makeMultipartBody("bnd", audio);
+
+    http::request<http::string_body> req{http::verb::post, "/v1/audio/transcriptions", 11};
+    req.set(http::field::content_type, "multipart/form-data; boundary=bnd");
+    // No Authorization header → token will be empty → validation fails.
+    req.body() = body;
+    req.prepare_payload();
+
+    http::response<http::string_body> res;
+    HandleTranscribe::handle(req, [&](http::response<http::string_body> r) { res = std::move(r); },
+                             config, with_auth);
+
+    EXPECT_EQ(res.result(), http::status::unauthorized);
+}
+
+TEST_F(HandleTranscribeTest, Returns503WhenInferenceLimiterFull) {
+    InferenceLimiter::instance().setMaxConcurrency(1);
+    InferenceLimiter::instance().acquire(); // fill the one available slot
+
+    auto audio = makeSilentWav(0.5f);
+    auto body  = makeMultipartBody("bnd", audio);
+
+    http::request<http::string_body> req{http::verb::post, "/v1/audio/transcriptions", 11};
+    req.set(http::field::content_type, "multipart/form-data; boundary=bnd");
+    req.body() = body;
+    req.prepare_payload();
+
+    http::response<http::string_body> res;
+    HandleTranscribe::handle(req, [&](http::response<http::string_body> r) { res = std::move(r); },
+                             config, no_auth);
+
+    // Restore before assertions so teardown is clean.
+    InferenceLimiter::instance().release();
+    InferenceLimiter::instance().setMaxConcurrency(4);
+
+    EXPECT_EQ(res.result(), http::status::service_unavailable);
+}
+
+TEST_F(HandleTranscribeTest, TemperatureValidInRangeReturns200) {
+    auto body = makeMultipartBodyWithExtraField("bnd", makeSilentWav(0.5f), "temperature", "0.5");
+
+    http::request<http::string_body> req{http::verb::post, "/v1/audio/transcriptions", 11};
+    req.set(http::field::content_type, "multipart/form-data; boundary=bnd");
+    req.body() = body;
+    req.prepare_payload();
+
+    http::response<http::string_body> res;
+    HandleTranscribe::handle(req, [&](http::response<http::string_body> r) { res = std::move(r); },
+                             config, no_auth);
+
+    EXPECT_EQ(res.result(), http::status::ok);
+    EXPECT_NE(res.body().find("\"text\""), std::string::npos);
 }
