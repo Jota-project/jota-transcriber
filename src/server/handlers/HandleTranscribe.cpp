@@ -273,7 +273,9 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
 
     if (response_format == "text") {
         auto first = text.find_first_not_of(" \t\r\n");
-        std::string trimmed = (first == std::string::npos) ? "" : text.substr(first);
+        auto last  = text.find_last_not_of(" \t\r\n");
+        std::string trimmed = (first == std::string::npos) ? ""
+                            : text.substr(first, last - first + 1);
         http::response<http::string_body> res;
         res.version(ver);
         res.result(http::status::ok);

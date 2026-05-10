@@ -227,6 +227,11 @@ TEST_F(HandleTranscribeTest, ResponseFormatTextReturnsPlainText) {
     // No leading whitespace
     EXPECT_TRUE(b.empty() || b.front() != ' ')
         << "Expected trimmed text, got leading space";
+    // No trailing whitespace
+    EXPECT_TRUE(b.empty() || b.back() != ' ')
+        << "Expected no trailing space, got: '" << b << "'";
+    EXPECT_TRUE(b.empty() || (b.back() != '\n' && b.back() != '\r'))
+        << "Expected no trailing newline, got: '" << b << "'";
 }
 
 TEST_F(HandleTranscribeTest, ResponseFormatVerboseJsonHasSegmentsKey) {
