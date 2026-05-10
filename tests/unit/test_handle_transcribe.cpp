@@ -381,6 +381,7 @@ TEST_F(HandleTranscribeTest, Returns413WhenBodyExceedsMaxUploadBytes) {
                              config, no_auth);
 
     EXPECT_EQ(res.result(), http::status::payload_too_large);
+    EXPECT_NE(res.body().find("payload_too_large_error"), std::string::npos);
 }
 
 TEST_F(HandleTranscribeTest, Returns401WhenAuthEnabledAndTokenMissing) {
@@ -402,6 +403,7 @@ TEST_F(HandleTranscribeTest, Returns401WhenAuthEnabledAndTokenMissing) {
                              config, with_auth);
 
     EXPECT_EQ(res.result(), http::status::unauthorized);
+    EXPECT_NE(res.body().find("\"error\""), std::string::npos);
 }
 
 TEST_F(HandleTranscribeTest, Returns503WhenInferenceLimiterFull) {
@@ -422,7 +424,7 @@ TEST_F(HandleTranscribeTest, Returns503WhenInferenceLimiterFull) {
 
     // Restore before assertions so teardown is clean.
     InferenceLimiter::instance().release();
-    InferenceLimiter::instance().setMaxConcurrency(4);
+    InferenceLimiter::instance().setMaxConcurrency(100); // safe high value, avoids coupling to private default
 
     EXPECT_EQ(res.result(), http::status::service_unavailable);
 }
