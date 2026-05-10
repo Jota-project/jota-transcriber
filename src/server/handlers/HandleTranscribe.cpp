@@ -9,6 +9,7 @@
 #include <whisper.h>
 #include <nlohmann/json.hpp>
 #include <boost/beast/version.hpp>
+#include <optional>
 #include <unordered_set>
 #include <sstream>
 #include <iomanip>
@@ -145,15 +146,16 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
     }
 
     // ── 6. Acquire model context ──────────────────────────────────────────────
-    whisper_context* ctx = nullptr;
+    std::optional<ModelCache::Guard> model_guard;
     try {
-        ctx = ModelCache::instance().acquire(config.model_path);
+        model_guard.emplace(config.model_path);
     } catch (const std::exception& e) {
         Log::error(std::string("HandleTranscribe: model load failed: ") + e.what());
         send(makeError(http::status::internal_server_error,
                        "Failed to load model", "server_error", ver));
         return;
     }
+    whisper_context* ctx = model_guard->ctx();
 
     // ── 7. Transcribe ─────────────────────────────────────────────────────────
     // Declared before guard so they're accessible when formatting the response below.
@@ -183,7 +185,6 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
 
         whisper_state* state = whisper_init_state(ctx);
         if (!state) {
-            ModelCache::instance().release();
             send(makeError(http::status::internal_server_error,
                            "Failed to initialize whisper state", "server_error", ver));
             return;
@@ -228,7 +229,6 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
                 float val = std::stof(t);
                 if (val < 0.0f || val > 1.0f) {
                     whisper_free_state(state);
-                    ModelCache::instance().release();
                     send(makeError(http::status::bad_request,
                                    "temperature must be between 0.0 and 1.0",
                                    "invalid_request_error", ver));
@@ -244,7 +244,6 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
 
         if (rc != 0) {
             whisper_free_state(state);
-            ModelCache::instance().release();
             Log::error("HandleTranscribe: whisper returned " + std::to_string(rc));
             send(makeError(http::status::internal_server_error,
                            "Whisper inference failed", "server_error", ver));
@@ -267,7 +266,6 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
         whisper_free_state(state);
     }
 
-    ModelCache::instance().release();
     Log::info("HandleTranscribe: transcribed " + std::to_string(pcm.size()) +
             " samples → " + std::to_string(text.size()) + " chars"
                 + " format=" + response_format);

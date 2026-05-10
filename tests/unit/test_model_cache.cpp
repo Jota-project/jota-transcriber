@@ -81,3 +81,24 @@ TEST_F(ModelCacheTest, MetricsContainExpectedKeys) {
     EXPECT_NE(m.find("transcription_model_ref_count"), std::string::npos);
     ModelCache::instance().release();
 }
+
+TEST_F(ModelCacheTest, GuardAcquiresAndReleasesOnDestruction) {
+    EXPECT_EQ(ModelCache::instance().refCount(), 0);
+    {
+        ModelCache::Guard guard(MODEL_PATH);
+        EXPECT_EQ(ModelCache::instance().refCount(), 1);
+        EXPECT_NE(guard.ctx(), nullptr);
+    }
+    // Guard destroyed → released
+    EXPECT_EQ(ModelCache::instance().refCount(), 0);
+}
+
+TEST_F(ModelCacheTest, GuardReleasesOnExceptionPath) {
+    // Verify the ref count is 0 after a guard scope exits even via exception
+    try {
+        ModelCache::Guard guard(MODEL_PATH);
+        EXPECT_EQ(ModelCache::instance().refCount(), 1);
+        throw std::runtime_error("simulated error");
+    } catch (...) {}
+    EXPECT_EQ(ModelCache::instance().refCount(), 0);
+}

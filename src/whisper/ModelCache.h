@@ -137,6 +137,21 @@ public:
                "transcription_model_ref_count " + std::to_string(ref_count_) + "\n";
     }
 
+    /**
+     * @brief RAII guard that acquires the model on construction and releases on destruction.
+     */
+    class Guard {
+    public:
+        explicit Guard(const std::string& path, bool use_gpu = true)
+            : ctx_(ModelCache::instance().acquire(path, use_gpu)) {}
+        ~Guard() { ModelCache::instance().release(); }
+        whisper_context* ctx() const { return ctx_; }
+        Guard(const Guard&) = delete;
+        Guard& operator=(const Guard&) = delete;
+    private:
+        whisper_context* ctx_;
+    };
+
     // Non-copyable
     ModelCache(const ModelCache&) = delete;
     ModelCache& operator=(const ModelCache&) = delete;
