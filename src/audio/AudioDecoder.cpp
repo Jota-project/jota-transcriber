@@ -128,6 +128,13 @@ std::vector<float> AudioDecoder::decode(const std::vector<uint8_t>& data) {
 
     // ── Resampler → 16 kHz mono s16 ──────────────────────────────────────────
     SwrContext* swr = swr_alloc();
+    if (!swr) {
+        avcodec_free_context(&codec_ctx);
+        avformat_close_input(&fmt_ctx);
+        av_freep(&avio_ctx->buffer);
+        avio_context_free(&avio_ctx);
+        throw std::runtime_error("AudioDecoder: swr_alloc failed");
+    }
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(59, 37, 100)
     AVChannelLayout out_layout = AV_CHANNEL_LAYOUT_MONO;
     av_opt_set_chlayout(swr, "in_chlayout",  &codec_ctx->ch_layout, 0);
@@ -183,7 +190,7 @@ std::vector<float> AudioDecoder::decode(const std::vector<uint8_t>& data) {
                     drain_swr(frame);
                     av_frame_unref(frame);
                 }
-                avcodec_send_packet(codec_ctx, pkt);
+                ret = avcodec_send_packet(codec_ctx, pkt);
             }
             while (avcodec_receive_frame(codec_ctx, frame) == 0) {
                 drain_swr(frame);
