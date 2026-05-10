@@ -49,6 +49,13 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
     const unsigned ver = req.version();
 
     // ── 1. Auth ───────────────────────────────────────────────────────────────
+    const bool auth_configured = !config.auth_token.empty() || !config.auth_api_url.empty();
+    if (!auth && auth_configured) {
+        Log::error("HandleTranscribe: auth_manager is null but auth is configured — rejecting");
+        send(makeError(http::status::internal_server_error,
+                       "Internal server error", "server_error", ver));
+        return;
+    }
     if (auth && auth->isAuthEnabled()) {
         std::string auth_header = std::string(req[http::field::authorization]);
         std::string token;
