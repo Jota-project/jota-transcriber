@@ -1,3 +1,10 @@
+## [1.1.1](https://github.com/Jota-project/jota-transcriber/compare/v1.1.0...v1.1.1) (2026-05-10)
+
+
+### Bug Fixes
+
+* server quick wins — model arg, auth nullptr, verbose_json thread-safety, text/plain trim ([#47](https://github.com/Jota-project/jota-transcriber/issues/47)) ([4ffe3ec](https://github.com/Jota-project/jota-transcriber/commit/4ffe3ecec6e148b5222fd3e083c2025b12c95d8d)), closes [#41](https://github.com/Jota-project/jota-transcriber/issues/41)
+
 # [1.1.0](https://github.com/Jota-project/jota-transcriber/compare/v1.0.1...v1.1.0) (2026-05-10)
 
 
