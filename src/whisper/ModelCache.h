@@ -4,8 +4,8 @@
 #include <thread>
 #include <atomic>
 #include <functional>
-#include <iostream>
 #include <whisper.h>
+#include "log/Log.h"
 
 /**
  * @brief Singleton cache for the whisper model context.
@@ -61,14 +61,14 @@ public:
 
         // Different model requested while one is loaded — unload first
         if (ctx_) {
-            std::cout << "[ModelCache] Unloading previous model: " << loaded_path_ << std::endl;
+            Log::info("ModelCache: unloading previous model: " + loaded_path_);
             whisper_free(ctx_);
             ctx_ = nullptr;
             loaded_path_.clear();
         }
 
         // Load the model
-        std::cout << "[ModelCache] Loading model: " << model_path << std::endl;
+        Log::info("ModelCache: loading model: " + model_path);
         whisper_context_params cparams = whisper_context_default_params();
         cparams.use_gpu    = use_gpu;
         cparams.flash_attn = true;
@@ -80,7 +80,7 @@ public:
 
         loaded_path_ = model_path;
         ref_count_ = 1;
-        std::cout << "[ModelCache] Model loaded successfully" << std::endl;
+        Log::info("ModelCache: model loaded successfully");
         return ctx_;
     }
 
@@ -154,7 +154,7 @@ private:
 
     void unloadLocked() {
         if (ctx_) {
-            std::cout << "[ModelCache] Unloading model: " << loaded_path_ << std::endl;
+            Log::info("ModelCache: unloading model: " + loaded_path_);
             whisper_free(ctx_);
             ctx_ = nullptr;
             loaded_path_.clear();
