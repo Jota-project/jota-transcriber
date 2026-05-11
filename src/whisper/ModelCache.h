@@ -1,8 +1,9 @@
 #pragma once
 #include <string>
 #include <mutex>
-#include <thread>
-#include <atomic>
+#include <condition_variable>
+#include <future>
+#include <chrono>
 #include <functional>
 #include <whisper.h>
 #include "log/Log.h"
@@ -91,20 +92,27 @@ public:
      * acquire() happens within ttl_seconds_, the model is freed.
      */
     void release() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (ref_count_ <= 0) return;
+        std::future<void> old_future;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (ref_count_ <= 0) return;
 
-        --ref_count_;
-        if (ref_count_ == 0) {
-            if (ttl_seconds_ == 0) {
-                // Immediate unload
-                unloadLocked();
-            } else if (ttl_seconds_ > 0) {
-                // Schedule deferred unload
-                scheduleUnloadLocked();
+            --ref_count_;
+            if (ref_count_ == 0) {
+                if (ttl_seconds_ == 0) {
+                    // Immediate unload
+                    unloadLocked();
+                } else if (ttl_seconds_ > 0) {
+                    // Schedule deferred unload; capture old future to drain outside lock
+                    old_future = scheduleUnloadLocked();
+                }
+                // ttl < 0 → keep forever (no-op)
             }
-            // ttl < 0 → keep forever (no-op)
         }
+        // Drain old timer task outside the lock to prevent deadlock:
+        // if old task was notified but hadn't re-acquired mutex yet,
+        // getting the future here (lock released) lets it exit cleanly.
+        if (old_future.valid()) old_future.get();
     }
 
     /**
@@ -137,12 +145,38 @@ public:
                "transcription_model_ref_count " + std::to_string(ref_count_) + "\n";
     }
 
+    /**
+     * @brief RAII guard that acquires the model on construction and releases on destruction.
+     *
+     * Non-movable: use std::optional<Guard> with emplace() for deferred construction.
+     */
+    class Guard {
+    public:
+        explicit Guard(const std::string& path, bool use_gpu = true)
+            : ctx_(ModelCache::instance().acquire(path, use_gpu)) {}
+        ~Guard() { ModelCache::instance().release(); }
+        whisper_context* ctx() const { return ctx_; }
+        Guard(const Guard&) = delete;
+        Guard& operator=(const Guard&) = delete;
+        Guard(Guard&&) = delete;
+    private:
+        whisper_context* ctx_;
+    };
+
     // Non-copyable
     ModelCache(const ModelCache&) = delete;
     ModelCache& operator=(const ModelCache&) = delete;
 
     ~ModelCache() {
-        cancelUnloadLocked();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            shutdown_ = true;
+            unload_pending_ = false;
+        }
+        cv_.notify_all();
+        if (unload_future_.valid())
+            unload_future_.get();
+        // ctx_ is safe to access now: timer task has exited
         if (ctx_) {
             whisper_free(ctx_);
             ctx_ = nullptr;
@@ -162,32 +196,40 @@ private:
         }
     }
 
-    void cancelUnloadLocked() {
-        if (unload_pending_.exchange(false)) {
-            // The timer thread will check unload_pending_ and skip the unload
+    void cancelUnloadLocked() { // caller holds mutex_
+        if (unload_pending_) {
+            unload_pending_ = false;
+            cv_.notify_all();
         }
     }
 
-    void scheduleUnloadLocked() {
+    std::future<void> scheduleUnloadLocked() {
+        std::future<void> old = std::move(unload_future_);
+        if (old.valid()) {
+            unload_pending_ = false;
+            cv_.notify_all();
+        }
         unload_pending_ = true;
         int ttl = ttl_seconds_;
-
-        // Detach a lightweight timer thread
-        std::thread([this, ttl]() {
-            std::this_thread::sleep_for(std::chrono::seconds(ttl));
-
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (unload_pending_ && ref_count_ == 0) {
+        unload_future_ = std::async(std::launch::async, [this, ttl]() {
+            std::unique_lock<std::mutex> lock(mutex_);
+            cv_.wait_for(lock, std::chrono::seconds(ttl),
+                         [this]() { return !unload_pending_ || shutdown_; });
+            if (unload_pending_ && !shutdown_) {
                 unloadLocked();
                 unload_pending_ = false;
             }
-        }).detach();
+        });
+        return old;
     }
 
     mutable std::mutex mutex_;
+    std::condition_variable cv_;
     whisper_context* ctx_ = nullptr;
     std::string loaded_path_;
     int ref_count_ = 0;
     int ttl_seconds_ = 300; // default 5 minutes
-    std::atomic<bool> unload_pending_{false};
+    bool unload_pending_ = false; // always accessed under mutex_
+    bool shutdown_ = false;       // set true in destructor; signals timer task to exit without unloading
+    std::future<void> unload_future_;
 };
