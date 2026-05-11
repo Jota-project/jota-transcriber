@@ -1,3 +1,10 @@
+## [1.1.3](https://github.com/Jota-project/jota-transcriber/compare/v1.1.2...v1.1.3) (2026-05-11)
+
+
+### Bug Fixes
+
+* ModelCache stability — RAII guard, cancelable timer, destructor safety ([#49](https://github.com/Jota-project/jota-transcriber/issues/49)) ([8059038](https://github.com/Jota-project/jota-transcriber/commit/8059038438614c19f55ba0151fee34fd4e846b8b)), closes [#43](https://github.com/Jota-project/jota-transcriber/issues/43)
+
 ## [1.1.2](https://github.com/Jota-project/jota-transcriber/compare/v1.1.1...v1.1.2) (2026-05-10)
 
 
