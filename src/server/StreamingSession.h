@@ -532,6 +532,8 @@ private:
             Log::debug("flushLoop inference: new=" + std::to_string(current_size - last_transcribed_size_) +
                        " silence_ms=" + std::to_string(elapsed_ms), session_id_);
             // Non-blocking inference: skip cycle if GPU is saturated.
+            // Lock order: state_mutex_ (already held) → InferenceLimiter::mutex_ (taken inside TryGuard).
+            // No inversion risk: InferenceLimiter never acquires state_mutex_.
             InferenceLimiter::TryGuard inf_guard;
             if (!inf_guard.acquired()) {
                 Log::debug("flushLoop: GPU busy, skipping inference cycle", session_id_);

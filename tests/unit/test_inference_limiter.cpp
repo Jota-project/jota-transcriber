@@ -9,6 +9,7 @@
 class InferenceLimiterTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        InferenceLimiter::instance().resetForTesting();  // ensure clean slate
         InferenceLimiter::instance().setMaxConcurrency(4);
     }
 };

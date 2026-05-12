@@ -5,7 +5,7 @@
 
 /**
  * @brief Singleton for limiting concurrent whisper inference calls.
- * 
+ *
  * Prevents GPU OOM and massive latency latency spikes by capping
  * the maximum number of simultaneous whisper_full_with_state() executions.
  */
@@ -26,6 +26,13 @@ public:
             // Unblock waiters in case we increased the limit
             cv_.notify_all();
         }
+    }
+
+    // Test-only: reset active count to 0 without affecting max_concurrent_.
+    void resetForTesting() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        active_count_ = 0;
+        cv_.notify_all();
     }
 
     /**
