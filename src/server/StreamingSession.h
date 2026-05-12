@@ -433,8 +433,7 @@ private:
             now.time_since_epoch()
         ).count();
 
-        static std::random_device rd;
-        static std::mt19937 gen(rd());
+        static thread_local std::mt19937 gen(std::random_device{}());
         std::uniform_int_distribution<> dis(1000, 9999);
 
         std::ostringstream oss;
