@@ -3,6 +3,7 @@
 #include <whisper.h>
 #include <filesystem>
 #include <thread>
+#include <atomic>
 #include <cmath>
 
 #ifndef PROJECT_ROOT
@@ -231,4 +232,44 @@ TEST_F(StreamingWhisperEngineTest, ProcessAudioChunkReturnsTrueConsecutivelyAtHW
     EXPECT_TRUE(engine.processAudioChunk(std::vector<float>(1600, 0.0f)));
     EXPECT_TRUE(engine.processAudioChunk(std::vector<float>(1600, 0.0f)));
     EXPECT_TRUE(engine.processAudioChunk(std::vector<float>(1600, 0.0f)));
+}
+
+// ─── Concurrency ─────────────────────────────────────────────────────────────
+
+TEST_F(StreamingWhisperEngineTest, ConcurrentAddAudioDuringTranscribeDoesNotDeadlock) {
+    // Verifies that processAudioChunk() can run concurrently with
+    // transcribeSlidingWindow() without deadlock or data corruption.
+    // With the old code (mutex held for the entire inference), the adder thread
+    // would block for 0.5–2 s; with the new snapshot-based code it proceeds freely.
+    StreamingWhisperEngine engine(ctx_);
+    engine.setLanguage("es");
+
+    // Fill buffer to inference threshold (3 s of silence)
+    std::vector<float> silence(16000 * 3, 0.0f);
+    engine.processAudioChunk(silence);
+
+    std::atomic<bool> done{false};
+    std::atomic<int>  chunks_added{0};
+
+    // Thread A: keep appending 100 ms chunks while inference runs
+    std::thread adder([&]() {
+        std::vector<float> chunk(1600, 0.0f);
+        while (!done.load(std::memory_order_relaxed)) {
+            engine.processAudioChunk(chunk);
+            chunks_added.fetch_add(1, std::memory_order_relaxed);
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    });
+
+    // Thread B (this thread): run one inference pass
+    engine.transcribeSlidingWindow(false);
+    done.store(true, std::memory_order_relaxed);
+    adder.join();
+
+    // Reaching here without deadlock/crash is the primary success criterion.
+    // With 10ms sleep between chunks and inference taking 500ms+, the adder
+    // should run at least ~50 times if it is truly running concurrently. We use
+    // 3 as a conservative floor to avoid flakiness while still distinguishing
+    // "adder ran freely" from "adder ran once before inference happened to complete".
+    EXPECT_GT(chunks_added.load(), 3);
 }
