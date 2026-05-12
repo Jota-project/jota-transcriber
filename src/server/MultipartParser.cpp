@@ -56,7 +56,9 @@ std::unordered_map<std::string, Part> parse(const std::string& body,
         std::string hdrs = body.substr(pos, hdrs_end - pos);
         pos = hdrs_end + 4; // skip \r\n\r\n
 
-        // Find next boundary
+        // Find next boundary using naive string search. RFC 2046 requires that
+        // the boundary string does not appear in the binary content of any part;
+        // if it does, the parser will incorrectly truncate the data.
         size_t next = body.find(part_delim, pos);
         if (next == std::string::npos)
             throw std::runtime_error("MultipartParser: malformed part — no closing boundary");
@@ -68,11 +70,13 @@ std::unordered_map<std::string, Part> parse(const std::string& body,
         std::string line;
         while (std::getline(ss, line)) {
             if (!line.empty() && line.back() == '\r') line.pop_back();
-            if (line.rfind("Content-Disposition:", 0) == 0) {
+            std::string line_lc = line;
+            std::transform(line_lc.begin(), line_lc.end(), line_lc.begin(), ::tolower);
+            if (line_lc.rfind("content-disposition:", 0) == 0) {
                 field_name    = extractDispositionParam(line, "name");
                 part.filename = extractDispositionParam(line, "filename");
-            } else if (line.rfind("Content-Type:", 0) == 0) {
-                part.content_type = line.substr(13);
+            } else if (line_lc.rfind("content-type:", 0) == 0) {
+                part.content_type = line.substr(line.find(':') + 1);
                 // Trim leading space
                 auto ns = part.content_type.find_first_not_of(' ');
                 if (ns != std::string::npos) part.content_type = part.content_type.substr(ns);

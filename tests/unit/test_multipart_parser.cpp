@@ -85,3 +85,43 @@ TEST(MultipartParserTest, ContentTypeIsExtracted) {
     auto parts = MultipartParser::parse(body, "b");
     EXPECT_EQ(parts.at("file").content_type, "audio/ogg");
 }
+
+// M2 — HTTP headers are case-insensitive (RFC 7230)
+TEST(MultipartParserTest, ParsesLowercaseContentTypeHeader) {
+    std::string body =
+        "--bound\r\n"
+        "Content-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\n"
+        "content-type: audio/wav\r\n"
+        "\r\n"
+        "AUDIO\r\n"
+        "--bound--\r\n";
+    auto parts = MultipartParser::parse(body, "bound");
+    ASSERT_EQ(parts.count("file"), 1u);
+    EXPECT_EQ(parts.at("file").content_type, "audio/wav");
+}
+
+TEST(MultipartParserTest, ParsesLowercaseContentDispositionHeader) {
+    std::string body =
+        "--bound\r\n"
+        "content-disposition: form-data; name=\"model\"\r\n"
+        "\r\n"
+        "whisper-1\r\n"
+        "--bound--\r\n";
+    auto parts = MultipartParser::parse(body, "bound");
+    ASSERT_EQ(parts.count("model"), 1u);
+    std::string val(parts.at("model").data.begin(), parts.at("model").data.end());
+    EXPECT_EQ(val, "whisper-1");
+}
+
+TEST(MultipartParserTest, ParsesMixedCaseContentTypeHeader) {
+    std::string body =
+        "--bound\r\n"
+        "Content-Disposition: form-data; name=\"file\"; filename=\"a.ogg\"\r\n"
+        "CONTENT-TYPE: audio/ogg\r\n"
+        "\r\n"
+        "AUDIO\r\n"
+        "--bound--\r\n";
+    auto parts = MultipartParser::parse(body, "bound");
+    ASSERT_EQ(parts.count("file"), 1u);
+    EXPECT_EQ(parts.at("file").content_type, "audio/ogg");
+}
