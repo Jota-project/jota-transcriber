@@ -78,13 +78,18 @@ bool StreamingWhisperEngine::processAudioChunk(const std::vector<float>& pcm_dat
 }
 
 StreamingWhisperEngine::TranscribeResult StreamingWhisperEngine::transcribeSlidingWindow(bool force_commit) {
-    std::lock_guard<std::mutex> lock(buffer_mutex_);
-    
-    TranscribeResult res;
-    if (audio_buffer_.empty()) {
-        return res;
+    // --- Step 1: Snapshot under lock ---
+    // Hold buffer_mutex_ only long enough to copy the buffer.
+    // This allows processAudioChunk() to proceed concurrently while inference runs.
+    std::vector<float> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(buffer_mutex_);
+        if (audio_buffer_.empty()) return {};
+        snapshot = audio_buffer_; // O(N) copy — necessary to release the lock
     }
-    
+    // buffer_mutex_ is now RELEASED — processAudioChunk() can append concurrently.
+
+    // --- Step 2: Run inference on snapshot (no lock held) ---
     // Use beam search when beam_size > 1, greedy otherwise
     whisper_full_params params = (beam_size_ > 1)
         ? whisper_full_default_params(WHISPER_SAMPLING_BEAM_SEARCH)
@@ -119,7 +124,7 @@ StreamingWhisperEngine::TranscribeResult StreamingWhisperEngine::transcribeSlidi
     // For a 5s buffer this saves ~83% of encoder attention work over zero-padded silence.
     {
         int ctx = static_cast<int>(
-            std::ceil(static_cast<float>(audio_buffer_.size()) / 16000.0f * 50.0f));
+            std::ceil(static_cast<float>(snapshot.size()) / 16000.0f * 50.0f));
         params.audio_ctx = std::max(ctx, 64); // floor at 64 tokens (~1.3s)
     }
 
@@ -133,15 +138,15 @@ StreamingWhisperEngine::TranscribeResult StreamingWhisperEngine::transcribeSlidi
 
     int result = whisper_full_with_state(
         ctx_, state_, params,
-        audio_buffer_.data(),
-        audio_buffer_.size()
+        snapshot.data(),   // use snapshot, not audio_buffer_
+        static_cast<int>(snapshot.size())
     );
-    
+
     if (result != 0) {
         std::cerr << "[StreamingWhisperEngine] ERROR: Whisper result=" << result << std::endl;
         throw std::runtime_error("Whisper transcription failed with code: " + std::to_string(result));
     }
-    
+
     if (language_ == "auto") {
         int id = whisper_full_lang_id_from_state(state_);
         const char* detected = whisper_lang_str(id);
@@ -150,23 +155,26 @@ StreamingWhisperEngine::TranscribeResult StreamingWhisperEngine::transcribeSlidi
             Log::info("Auto-detected language locked to: " + language_);
         }
     }
-    
+
+    // --- Step 3: Read segments from state (no lock held) ---
+    // whisper_full_get_segment_*_from_state() reads from state_, which is owned
+    // by this engine instance exclusively — safe without the buffer lock.
     const int n_segments = whisper_full_n_segments_from_state(state_);
-    
+
     // We limit max window to ~10 seconds to keep inference time < 100ms
     const size_t max_window_samples = 16000 * 10;
-    
-    if (force_commit || audio_buffer_.size() >= max_window_samples) {
+
+    if (force_commit || snapshot.size() >= max_window_samples) {
         int commit_up_to_segment = -1;
         int64_t commit_t1 = 0;
-        
+
         if (force_commit) {
             commit_up_to_segment = n_segments - 1;
         } else {
-            // Find the last segment that ends before the final 2 seconds of audio
-            // Whisper timestamps are in 10ms (100 = 1 sec).
-            int64_t overlap_bounds_t = (static_cast<int64_t>(audio_buffer_.size()) - 32000) / 160;
-            
+            // Find the last segment that ends before the final 2 seconds of audio.
+            // Whisper timestamps are in 10ms units (100 = 1 sec).
+            int64_t overlap_bounds_t = (static_cast<int64_t>(snapshot.size()) - 32000) / 160;
+
             for (int i = n_segments - 1; i >= 0; --i) {
                 int64_t t1 = whisper_full_get_segment_t1_from_state(state_, i);
                 if (t1 < overlap_bounds_t) {
@@ -175,7 +183,7 @@ StreamingWhisperEngine::TranscribeResult StreamingWhisperEngine::transcribeSlidi
                     break;
                 }
             }
-            
+
             // If the user spoke a continuous 10s sentence without any punctuation break,
             // we forcefully commit everything except the very last segment.
             if (commit_up_to_segment == -1 && n_segments > 1) {
@@ -183,8 +191,9 @@ StreamingWhisperEngine::TranscribeResult StreamingWhisperEngine::transcribeSlidi
                 commit_t1 = whisper_full_get_segment_t1_from_state(state_, commit_up_to_segment);
             }
         }
-        
+
         if (commit_up_to_segment >= 0) {
+            TranscribeResult res;
             for (int i = 0; i <= commit_up_to_segment; ++i) {
                 const char* text = whisper_full_get_segment_text_from_state(state_, i);
                 if (text) res.committed_text += text;
@@ -193,33 +202,43 @@ StreamingWhisperEngine::TranscribeResult StreamingWhisperEngine::transcribeSlidi
                 const char* text = whisper_full_get_segment_text_from_state(state_, i);
                 if (text) res.partial_text += text;
             }
-            
-            // Shift audio buffer, dropping the committed audio to prevent duplicate transcriptions
-            if (commit_t1 > 0) {
-                size_t samples_to_erase = commit_t1 * 160;
-                Log::debug("Committing " + std::to_string(samples_to_erase) + " samples: '" + res.committed_text + "'");
-                if (samples_to_erase < audio_buffer_.size()) {
-                    audio_buffer_.erase(audio_buffer_.begin(), audio_buffer_.begin() + samples_to_erase);
-                } else {
+
+            // --- Step 4: Mutate audio_buffer_ under lock ---
+            // processAudioChunk() appends to the END; we erase from the BEGINNING.
+            // Samples added during inference are preserved — they are past the erase point.
+            {
+                std::lock_guard<std::mutex> lock(buffer_mutex_);
+                if (commit_t1 > 0) {
+                    size_t samples_to_erase = commit_t1 * 160;
+                    Log::debug("Committing " + std::to_string(samples_to_erase) + " samples: '" + res.committed_text + "'");
+                    if (samples_to_erase < audio_buffer_.size()) {
+                        audio_buffer_.erase(audio_buffer_.begin(),
+                                            audio_buffer_.begin() + samples_to_erase);
+                    } else {
+                        audio_buffer_.clear();
+                    }
+                } else if (force_commit) {
+                    // force_commit is only called from handleEnd(), which runs after
+                    // stopFlushLoop() has joined the flush thread — no concurrent
+                    // processAudioChunk() at this point, so clear() is safe.
+                    Log::debug("Force commit, clearing buffer: '" + res.committed_text + "'");
                     audio_buffer_.clear();
                 }
-            } else if (force_commit) {
-                Log::debug("Force commit, clearing buffer: '" + res.committed_text + "'");
-                audio_buffer_.clear();
             }
-            
+
             return res;
         }
     }
-    
-    // If not committing, all text is partial
+
+    // Partial-only path: no buffer mutation needed, return without re-acquiring the lock.
+    TranscribeResult res;
     for (int i = 0; i < n_segments; ++i) {
         const char* text = whisper_full_get_segment_text_from_state(state_, i);
         if (text) res.partial_text += text;
     }
-    
+
     Log::debug("Partial (n_seg=" + std::to_string(n_segments) + "): '" + res.partial_text + "'");
-    
+
     return res;
 }
 
