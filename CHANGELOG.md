@@ -1,3 +1,10 @@
+## [1.1.4](https://github.com/Jota-project/jota-transcriber/compare/v1.1.3...v1.1.4) (2026-05-12)
+
+
+### Bug Fixes
+
+* InferenceLimiter::TryGuard — eliminate TOCTOU and exception slot leak ([#50](https://github.com/Jota-project/jota-transcriber/issues/50)) ([9f73bfa](https://github.com/Jota-project/jota-transcriber/commit/9f73bfa6323f41fe4bf3c6da4ad931a0a69c8e6f)), closes [#44](https://github.com/Jota-project/jota-transcriber/issues/44)
+
 ## [1.1.3](https://github.com/Jota-project/jota-transcriber/compare/v1.1.2...v1.1.3) (2026-05-11)
 
 
