@@ -267,5 +267,9 @@ TEST_F(StreamingWhisperEngineTest, ConcurrentAddAudioDuringTranscribeDoesNotDead
     adder.join();
 
     // Reaching here without deadlock/crash is the primary success criterion.
-    EXPECT_GT(chunks_added.load(), 0);
+    // With 10ms sleep between chunks and inference taking 500ms+, the adder
+    // should run at least ~50 times if it is truly running concurrently. We use
+    // 3 as a conservative floor to avoid flakiness while still distinguishing
+    // "adder ran freely" from "adder ran once before inference happened to complete".
+    EXPECT_GT(chunks_added.load(), 3);
 }

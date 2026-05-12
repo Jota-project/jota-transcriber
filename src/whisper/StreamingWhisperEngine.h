@@ -66,6 +66,9 @@ public:
      */
     size_t getBufferSize() const;
     
+    // Configuration — must be called before the first processAudioChunk() or
+    // transcribeSlidingWindow() call. Not thread-safe with inference.
+
     /**
      * @brief Configurar idioma de transcripción
      * @param lang Código de idioma (ej: "es", "en", "auto")
