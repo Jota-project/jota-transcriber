@@ -1,3 +1,10 @@
+## [1.1.5](https://github.com/Jota-project/jota-transcriber/compare/v1.1.4...v1.1.5) (2026-05-12)
+
+
+### Bug Fixes
+
+* release buffer_mutex_ during whisper inference (snapshot-based transcribeSlidingWindow) ([#53](https://github.com/Jota-project/jota-transcriber/issues/53)) ([a91cc79](https://github.com/Jota-project/jota-transcriber/commit/a91cc7933b9896292884225dbfd18cb70d8b282c)), closes [#45](https://github.com/Jota-project/jota-transcriber/issues/45)
+
 ## [1.1.4](https://github.com/Jota-project/jota-transcriber/compare/v1.1.3...v1.1.4) (2026-05-12)
 
 
