@@ -1,3 +1,10 @@
+## [1.1.6](https://github.com/Jota-project/jota-transcriber/compare/v1.1.5...v1.1.6) (2026-05-12)
+
+
+### Bug Fixes
+
+* minor quality — MultipartParser case-insensitive headers, thread_local mt19937 ([#54](https://github.com/Jota-project/jota-transcriber/issues/54)) ([d2d8713](https://github.com/Jota-project/jota-transcriber/commit/d2d8713bf734f6d0357268ecc8b194dbfad3649f)), closes [#46](https://github.com/Jota-project/jota-transcriber/issues/46)
+
 ## [1.1.5](https://github.com/Jota-project/jota-transcriber/compare/v1.1.4...v1.1.5) (2026-05-12)
 
 
