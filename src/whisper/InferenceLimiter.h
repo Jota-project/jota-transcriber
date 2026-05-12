@@ -5,7 +5,7 @@
 
 /**
  * @brief Singleton for limiting concurrent whisper inference calls.
- * 
+ *
  * Prevents GPU OOM and massive latency latency spikes by capping
  * the maximum number of simultaneous whisper_full_with_state() executions.
  */
@@ -26,6 +26,13 @@ public:
             // Unblock waiters in case we increased the limit
             cv_.notify_all();
         }
+    }
+
+    // Test-only: reset active count to 0 without affecting max_concurrent_.
+    void resetForTesting() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        active_count_ = 0;
+        cv_.notify_all();
     }
 
     /**
@@ -86,6 +93,22 @@ public:
         // Non-copyable/movable
         Guard(const Guard&) = delete;
         Guard& operator=(const Guard&) = delete;
+    };
+
+    // Non-blocking RAII guard. Acquires a slot via try_acquire() on construction.
+    // Check acquired() before using. Releases only if a slot was acquired.
+    // Non-movable: use std::optional<TryGuard> with emplace() for deferred construction.
+    class TryGuard {
+    public:
+        TryGuard() : acquired_(InferenceLimiter::instance().try_acquire()) {}
+        ~TryGuard() { if (acquired_) InferenceLimiter::instance().release(); }
+        bool acquired() const { return acquired_; }
+        TryGuard(const TryGuard&) = delete;
+        TryGuard& operator=(const TryGuard&) = delete;
+        TryGuard(TryGuard&&) = delete;
+        TryGuard& operator=(TryGuard&&) = delete;
+    private:
+        bool acquired_;
     };
 
 private:

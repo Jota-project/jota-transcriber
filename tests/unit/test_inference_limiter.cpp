@@ -9,6 +9,7 @@
 class InferenceLimiterTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        InferenceLimiter::instance().resetForTesting();  // ensure clean slate
         InferenceLimiter::instance().setMaxConcurrency(4);
     }
 };
@@ -91,4 +92,22 @@ TEST_F(InferenceLimiterTest, TryAcquireSucceedsAfterRelease) {
     bool acquired = InferenceLimiter::instance().try_acquire();
     EXPECT_TRUE(acquired);
     if (acquired) InferenceLimiter::instance().release();
+}
+
+TEST_F(InferenceLimiterTest, TryGuardAcquiresAndReleasesOnDestruction) {
+    InferenceLimiter::instance().setMaxConcurrency(1);
+    {
+        InferenceLimiter::TryGuard g;
+        EXPECT_TRUE(g.acquired());
+        EXPECT_FALSE(InferenceLimiter::instance().hasCapacity());
+    }
+    EXPECT_TRUE(InferenceLimiter::instance().hasCapacity());
+}
+
+TEST_F(InferenceLimiterTest, TryGuardFailsWhenAtLimit) {
+    InferenceLimiter::instance().setMaxConcurrency(1);
+    InferenceLimiter::Guard occupied; // take the only slot (blocking acquire)
+    InferenceLimiter::TryGuard g;
+    EXPECT_FALSE(g.acquired());
+    // g.acquired()==false means destructor will NOT call release() — no double-free
 }
