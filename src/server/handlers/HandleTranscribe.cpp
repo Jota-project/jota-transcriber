@@ -137,14 +137,6 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
         return;
     }
 
-    // ── 5. Inference capacity check ───────────────────────────────────────────
-    if (!InferenceLimiter::instance().hasCapacity()) {
-        send(makeError(http::status::service_unavailable,
-                       "Server is at maximum inference capacity, try again later",
-                       "server_error", ver));
-        return;
-    }
-
     // ── 6. Acquire model context ──────────────────────────────────────────────
     std::optional<ModelCache::Guard> model_guard;
     try {
@@ -179,9 +171,19 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
                     parts.at("task").data.end());
     }
 
+    // ── 7. Acquire inference slot (atomic try — no TOCTOU) ────────────────────
+    // Must be acquired AFTER model_guard so it outlives the inference block.
+    InferenceLimiter::TryGuard inf_guard;
+    if (!inf_guard.acquired()) {
+        // model_guard releases the model automatically on scope exit.
+        send(makeError(http::status::service_unavailable,
+                       "Server is at maximum inference capacity, try again later",
+                       "server_error", ver));
+        return;
+    }
+
     std::string text;
     {
-        InferenceLimiter::Guard guard;
 
         whisper_state* state = whisper_init_state(ctx);
         if (!state) {

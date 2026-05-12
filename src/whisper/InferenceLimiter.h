@@ -88,6 +88,22 @@ public:
         Guard& operator=(const Guard&) = delete;
     };
 
+    // Non-blocking RAII guard. Acquires a slot via try_acquire() on construction.
+    // Check acquired() before using. Releases only if a slot was acquired.
+    // Non-movable: use std::optional<TryGuard> with emplace() for deferred construction.
+    class TryGuard {
+    public:
+        TryGuard() : acquired_(InferenceLimiter::instance().try_acquire()) {}
+        ~TryGuard() { if (acquired_) InferenceLimiter::instance().release(); }
+        bool acquired() const { return acquired_; }
+        TryGuard(const TryGuard&) = delete;
+        TryGuard& operator=(const TryGuard&) = delete;
+        TryGuard(TryGuard&&) = delete;
+        TryGuard& operator=(TryGuard&&) = delete;
+    private:
+        bool acquired_;
+    };
+
 private:
     InferenceLimiter() = default;
     ~InferenceLimiter() = default;

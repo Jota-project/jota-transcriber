@@ -532,12 +532,13 @@ private:
             Log::debug("flushLoop inference: new=" + std::to_string(current_size - last_transcribed_size_) +
                        " silence_ms=" + std::to_string(elapsed_ms), session_id_);
             // Non-blocking inference: skip cycle if GPU is saturated.
-            if (!InferenceLimiter::instance().try_acquire()) {
+            InferenceLimiter::TryGuard inf_guard;
+            if (!inf_guard.acquired()) {
                 Log::debug("flushLoop: GPU busy, skipping inference cycle", session_id_);
                 continue;
             }
             auto res = engine_->transcribeSlidingWindow(false);
-            InferenceLimiter::instance().release();
+            // inf_guard releases the slot automatically on scope exit (including exceptions)
 
             // If inference drained the buffer below HWM, reset the overflow flag so the
             // next saturation episode triggers a new warning regardless of client audio timing.
