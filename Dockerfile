@@ -1,5 +1,5 @@
 # Build Stage
-FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS builder
+FROM nvidia/cuda:13.3.0-devel-ubuntu22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -71,7 +71,7 @@ RUN cmake -B build \
 RUN cmake --build build --target jota-transcriber -j$(nproc)
 
 # Runtime Stage
-FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04 AS runtime
+FROM nvidia/cuda:13.3.0-runtime-ubuntu22.04 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 
