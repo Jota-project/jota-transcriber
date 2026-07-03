@@ -1,3 +1,11 @@
+![Status: Maintained](https://img.shields.io/badge/status-Maintained-2ea44f)
+
+> **Role in Jota ecosystem:** STT streaming microservice for the Jota gateway. Receives PCM Float32 audio over WebSocket and emits partial + final transcriptions. Receives `language` and `vad_thold` from the gateway's per-client `ClientConfig`.
+>
+> Part of [Jota-project](https://github.com/Jota-project). See [`ARCHITECTURE.md`](https://github.com/Jota-project/.github/blob/main/ARCHITECTURE.md) for the full system map.
+
+---
+
 # Real-Time C++ Transcription Microservice
 
 High-performance real-time audio transcription microservice built with C++17 and [whisper.cpp](https://github.com/ggerganov/whisper.cpp). Clients stream raw PCM audio over WebSocket and receive partial and final transcription results as JSON.
@@ -66,6 +74,8 @@ cd third_party/whisper.cpp/models
 # Generate self-signed certs for development
 ./generate_certs.sh
 ```
+
+> **Note on auth:** `AUTH_API_URL` was originally designed to point to `jota-db`. The recommended path forward is per-service `AUTH_TOKEN` (static), with `AUTH_API_URL` kept only for setups that still centralize auth via `jota-db`. The deprecation of `jota-db` as default auth backend is tracked in [`Jota-project/jota-gateway` issues](https://github.com/Jota-project/jota-gateway/issues).
 
 ### Run tests
 
@@ -234,6 +244,12 @@ Always build with `-DBUILD_SHARED_LIBS=OFF`. whisper.cpp defaults to shared libs
 ## Client Examples
 
 See [`clients/`](clients/) for a Python test client (file / mic / synthetic audio) and the full API reference.
+
+## Status & roadmap
+
+- **Status:** Maintained. Recent work (2026-05) focused on stability fixes — `ModelCache` RAII, `AudioDecoder` robustness, `InferenceLimiter` TOCTOU.
+- **Known issue:** race condition between `flushLoop` and `handleEnd` may emit duplicate `is_final` transcriptions. Fix is straightforward; see issue #27.
+- **Auth migration:** the default auth path will move from `jota-db` external API to per-service `AUTH_TOKEN` static. `AUTH_API_URL` will remain as an option.
 
 ---
 
