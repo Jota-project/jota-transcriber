@@ -13,6 +13,7 @@
 #include <thread>
 #include <memory>
 #include <atomic>
+#include <cstring>
 
 namespace beast = boost::beast;
 namespace http = beast::http;
@@ -302,6 +303,36 @@ TEST_F(StreamingSessionTest, HandleEndFallsBackWhenGpuSaturated) {
     EXPECT_TRUE(trans["is_final"]);
     EXPECT_EQ(trans["complete"], false);
     EXPECT_EQ(trans["reason"], "gpu_saturated_timeout");
+}
+
+TEST_F(StreamingSessionTest, EmitsStatusBusyThenOkAroundGpuSaturation) {
+    auto port = startServer(false);
+    auto client = connect(port);
+
+    client.sendJson({{"type", "config"}, {"language", "es"}});
+    EXPECT_EQ(client.recvJson()["type"], "ready");
+
+    // Ocupamos el único slot (max_concurrency=1) para que el flushLoop de
+    // esta sesión no pueda adquirirlo.
+    auto occupied = std::make_unique<InferenceLimiter::Guard>();
+
+    // >2s de silencio @16kHz float32 — cruza MIN_BUFFER_SAMPLES (2s) y
+    // dispara el intento de inferencia en flushLoop.
+    std::vector<float> silence(33600, 0.0f);
+    std::vector<unsigned char> bytes(silence.size() * sizeof(float));
+    std::memcpy(bytes.data(), silence.data(), bytes.size());
+    client.sendBinary(bytes);
+
+    auto status1 = client.recvJson();
+    EXPECT_EQ(status1["type"], "status");
+    EXPECT_EQ(status1["state"], "busy");
+    EXPECT_EQ(status1["reason"], "gpu_saturated");
+
+    occupied.reset(); // libera el slot
+
+    auto status2 = client.recvJson();
+    EXPECT_EQ(status2["type"], "status");
+    EXPECT_EQ(status2["state"], "ok");
 }
 
 TEST_F(StreamingSessionTest, DoubleConfig) {

@@ -56,6 +56,7 @@ public:
           auth_manager_(auth_manager),
           configured_(false),
           buffer_overflowed_(false),
+          capacity_degraded_(false),
           last_transcribed_size_(0),
           language_("es"),
           whisper_beam_size_(whisper_beam_size),
@@ -365,6 +366,7 @@ private:
 
                 configured_ = true;
                 last_transcribed_size_ = 0;
+                capacity_degraded_ = false;
                 full_transcription_    = "";
                 raw_transcription_     = "";
                 last_audio_time_ = std::chrono::steady_clock::now();
@@ -473,6 +475,7 @@ private:
     std::string session_id_;
     bool configured_;
     bool buffer_overflowed_; // true while engine buffer is above 20s HWM
+    bool capacity_degraded_; // true while this session's own inference cycles are being skipped (GPU saturated)
     size_t last_transcribed_size_;
     std::string language_;
 
@@ -561,7 +564,21 @@ private:
             InferenceLimiter::TryGuard inf_guard;
             if (!inf_guard.acquired()) {
                 Log::debug("flushLoop: GPU busy, skipping inference cycle", session_id_);
+                if (!capacity_degraded_) {
+                    capacity_degraded_ = true;
+                    Log::warn("flushLoop: entrando en estado busy (gpu_saturated)", session_id_);
+                    lock.unlock();
+                    sendMessage({{"type", "status"}, {"state", "busy"}, {"reason", "gpu_saturated"}});
+                    lock.lock();
+                }
                 continue;
+            }
+            if (capacity_degraded_) {
+                capacity_degraded_ = false;
+                Log::info("flushLoop: saliendo de estado busy", session_id_);
+                lock.unlock();
+                sendMessage({{"type", "status"}, {"state", "ok"}});
+                lock.lock();
             }
             auto res = engine_->transcribeSlidingWindow(false);
             // inf_guard releases the slot automatically on scope exit (including exceptions)
