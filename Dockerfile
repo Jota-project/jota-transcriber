@@ -1,5 +1,29 @@
 # Build Stage
-FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS builder
+#
+# ⚠️  AVISO DE COMPATIBILIDAD CUDA — NO ACTUALIZAR A 12.3+ ⚠️
+#
+# Este Dockerfile usa CUDA 12.2 explícitamente. Es la última versión del toolkit
+# NVIDIA compatible con GPUs de arquitectura Pascal (compute capability 6.1).
+#
+# GPUs afectadas: GTX 1060, GTX 1050 Ti, Tesla P4/P40/P100, Quadro Pxxxx, etc.
+#
+# A partir de CUDA 12.3, NVIDIA incluyó soporte para "forward compatibility" que
+# requiere GPUs con compute capability ≥9.0 (Ampere o superior). Las GPUs Pascal
+# no son compatibles y fallan con:
+#
+#   ggml_cuda_init: failed to initialize CUDA:
+#   forward compatibility was attempted on non supported HW
+#
+# Más información:
+#   - PR original: https://github.com/Jota-project/jota-transcriber/pull/63
+#   - NVIDIA CUDA 12.2 Release Notes: compatible con Pascal
+#   - NVIDIA CUDA 12.3+ Release Notes: requiere Ampere o superior
+#
+# AVISO: Dependabot está configurado para IGNORAR nvidia/cuda. Si necesitas
+# actualizar por alguna razón, verifica primero la compatibilidad en:
+#   https://github.com/Jota-project/jota-transcriber/pull/63
+#
+FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -52,10 +76,11 @@ RUN cmake -B build \
     -DBUILD_SERVER=ON \
     -DBUILD_TESTS=OFF \
     -DBUILD_SHARED_LIBS=OFF \
-    -DGGML_CUDA=1
+    -DGGML_CUDA=1 \
+    -DCMAKE_CUDA_ARCHITECTURES=61
 
 # Compila whisper + ggml (incluye kernels CUDA — la parte lenta).
-RUN cmake --build build --target whisper -j$(nproc)
+RUN cmake --build build --target whisper -j2
 
 # ── Fase B: código del servidor ────────────────────────────────────────────
 # Solo se invalida cuando cambia src/ o generate_certs.sh.
@@ -68,10 +93,12 @@ RUN cmake -B build \
     -DBUILD_TESTS=OFF \
     -DBUILD_SHARED_LIBS=OFF \
     -DGGML_CUDA=1
-RUN cmake --build build --target jota-transcriber -j$(nproc)
+RUN cmake --build build --target jota-transcriber -j2
 
 # Runtime Stage
-FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04 AS runtime
+# ⚠️  Mismo aviso de compatibilidad CUDA que en Build Stage (arriba).
+# Usar siempre nvidia/cuda:12.2.0-runtime-ubuntu22.04 — NO actualizar.
+FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 

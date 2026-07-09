@@ -1,16 +1,27 @@
 version: 2
 updates:
-  # 1. Actualización de Imágenes de Docker (NVIDIA/CUDA, Boost, etc.)
+  # 1. Actualización de Imágenes de Docker (Boost, etc.)
+  # NOTA: NVIDIA/CUDA se ignora explícitamente. La versión 12.2 es la última
+  # compatible con GPUs Pascal (GTX 1060, compute capability 6.1). Versiones
+  # posteriores (12.3+) incluyen features de forward compatibility que requieren
+  # GPUs más nuevas (compute ≥9.0). No actualizar sin verificar compatibilidad
+  # con Pascal primero. Ver: https://github.com/Jota-project/jota-transcriber/pull/63
   - package-ecosystem: "docker"
-    directory: "/" 
+    directory: "/"
     schedule:
-      interval: "weekly" # Revisión semanal para no saturar
+      interval: "weekly"
     open-pull-requests-limit: 5
     assignees:
-      - "tu-usuario-de-github" # Reemplaza con tu handle de GitHub
+      - "tu-usuario-de-github"
     labels:
       - "docker"
       - "dependencies"
+    ignore:
+      # Ignorar actualizaciones de imágenes CUDA — NO CAMBIAR
+      # CUDA 12.2 es la última versión compatible con GPUs Pascal.
+      # Cualquier PR de Dependabot para CUDA será rechazado.
+      - dependency-name: "nvidia/cuda"
+      - dependency-name: "cuda"
 
   # 2. Actualización de Submódulos (whisper.cpp)
   - package-ecosystem: "gitsubmodule"

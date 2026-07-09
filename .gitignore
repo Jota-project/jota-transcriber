@@ -4,6 +4,7 @@ build/
 bin/
 models/
 *.wav
+test_audio/
 venv/
 # Feature docs (superpowers — internal planning, not for repo)
 docs/superpowers/
