@@ -111,3 +111,48 @@ TEST_F(InferenceLimiterTest, TryGuardFailsWhenAtLimit) {
     EXPECT_FALSE(g.acquired());
     // g.acquired()==false means destructor will NOT call release() — no double-free
 }
+
+TEST_F(InferenceLimiterTest, TryAcquireForSucceedsWhenSlotFreesWithinTimeout) {
+    InferenceLimiter::instance().setMaxConcurrency(1);
+    auto guard = std::make_unique<InferenceLimiter::Guard>(); // occupy the only slot
+
+    std::thread releaser([&]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        guard.reset(); // free the slot partway through the wait
+    });
+
+    bool acquired = InferenceLimiter::instance().try_acquire_for(std::chrono::milliseconds(500));
+    releaser.join();
+
+    EXPECT_TRUE(acquired);
+    if (acquired) InferenceLimiter::instance().release();
+}
+
+TEST_F(InferenceLimiterTest, TryAcquireForFailsWhenTimeoutExpires) {
+    InferenceLimiter::instance().setMaxConcurrency(1);
+    InferenceLimiter::Guard occupied; // never released during this test
+
+    auto start = std::chrono::steady_clock::now();
+    bool acquired = InferenceLimiter::instance().try_acquire_for(std::chrono::milliseconds(100));
+    auto elapsed = std::chrono::steady_clock::now() - start;
+
+    EXPECT_FALSE(acquired);
+    EXPECT_GE(elapsed, std::chrono::milliseconds(100));
+}
+
+TEST_F(InferenceLimiterTest, TryGuardWithTimeoutAcquiresAndReleasesOnDestruction) {
+    InferenceLimiter::instance().setMaxConcurrency(1);
+    {
+        InferenceLimiter::TryGuard g(std::chrono::milliseconds(100));
+        EXPECT_TRUE(g.acquired());
+        EXPECT_FALSE(InferenceLimiter::instance().hasCapacity());
+    }
+    EXPECT_TRUE(InferenceLimiter::instance().hasCapacity());
+}
+
+TEST_F(InferenceLimiterTest, TryGuardWithTimeoutFailsWhenSlotNeverFrees) {
+    InferenceLimiter::instance().setMaxConcurrency(1);
+    InferenceLimiter::Guard occupied;
+    InferenceLimiter::TryGuard g(std::chrono::milliseconds(100));
+    EXPECT_FALSE(g.acquired());
+}

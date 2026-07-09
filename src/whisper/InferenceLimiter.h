@@ -1,6 +1,7 @@
 #pragma once
 #include <mutex>
 #include <condition_variable>
+#include <chrono>
 #include <iostream>
 
 /**
@@ -58,6 +59,19 @@ public:
     }
 
     /**
+     * @brief Try to acquire an inference slot, waiting up to `timeout` if none is free.
+     * @return true if a slot was acquired before the timeout elapsed, false otherwise.
+     */
+    bool try_acquire_for(std::chrono::milliseconds timeout) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (cv_.wait_for(lock, timeout, [this]() { return active_count_ < max_concurrent_; })) {
+            ++active_count_;
+            return true;
+        }
+        return false;
+    }
+
+    /**
      * @brief Release an inference slot, waking up one waiting thread.
      */
     void release() {
@@ -101,6 +115,8 @@ public:
     class TryGuard {
     public:
         TryGuard() : acquired_(InferenceLimiter::instance().try_acquire()) {}
+        explicit TryGuard(std::chrono::milliseconds timeout)
+            : acquired_(InferenceLimiter::instance().try_acquire_for(timeout)) {}
         ~TryGuard() { if (acquired_) InferenceLimiter::instance().release(); }
         bool acquired() const { return acquired_; }
         TryGuard(const TryGuard&) = delete;
