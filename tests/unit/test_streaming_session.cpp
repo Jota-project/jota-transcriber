@@ -318,3 +318,10 @@ TEST_F(StreamingSessionTest, DoubleConfig) {
     EXPECT_EQ(msg2["type"], "ready");
     EXPECT_EQ(msg2["config"]["language"], "en");
 }
+
+TEST(MsToSamples16kHzTest, ConvertsMillisecondsToSampleCount) {
+    EXPECT_EQ(msToSamples16kHz(500), 8000u);
+    EXPECT_EQ(msToSamples16kHz(250), 4000u);   // valor por defecto anterior
+    EXPECT_EQ(msToSamples16kHz(1000), 16000u);
+    EXPECT_EQ(msToSamples16kHz(0), 0u);
+}

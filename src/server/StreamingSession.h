@@ -29,6 +29,11 @@ namespace net = boost::asio;
 using tcp = net::ip::tcp;
 using json = nlohmann::json;
 
+// ms of audio @16kHz mono float32 → sample count.
+inline size_t msToSamples16kHz(int ms) {
+    return static_cast<size_t>(ms) * 16;
+}
+
 template <class StreamType>
 class StreamingSession : public std::enable_shared_from_this<StreamingSession<StreamType>>, public SessionTracker::SessionBase {
 public:
@@ -43,7 +48,8 @@ public:
         float whisper_temperature = 0.2f,
         float whisper_temperature_inc = 0.2f,
         float whisper_no_speech_thold = 0.3f,
-        float whisper_logprob_thold = -1.0f
+        float whisper_logprob_thold = -1.0f,
+        int flush_min_new_audio_ms = 500
     )
         : ws_(std::move(ws)),
           model_path_(model_path),
@@ -60,6 +66,7 @@ public:
           whisper_temperature_inc_(whisper_temperature_inc),
           whisper_no_speech_thold_(whisper_no_speech_thold),
           whisper_logprob_thold_(whisper_logprob_thold),
+          flush_min_new_audio_ms_(flush_min_new_audio_ms),
           model_acquired_(false),
           bytes_received_in_window_(0),
           rate_limit_start_(std::chrono::steady_clock::now()),
@@ -478,6 +485,7 @@ private:
     float whisper_temperature_inc_;
     float whisper_no_speech_thold_;
     float whisper_logprob_thold_;
+    int flush_min_new_audio_ms_;
     bool model_acquired_;
     
     // Rate limiting & Timeout
@@ -514,7 +522,7 @@ private:
         // Handles ALL inference, decoupled from the WebSocket receive loop.
         // Triggers on: 250ms of new audio accumulated, OR 400ms of silence with unprocessed audio.
         // Does NOT trigger if buffer < 2s: Whisper hallucinates badly on very short windows.
-        const size_t MIN_NEW_SAMPLES    = 4000;  // 250ms @ 16kHz
+        const size_t MIN_NEW_SAMPLES    = msToSamples16kHz(flush_min_new_audio_ms_);
         const size_t MIN_BUFFER_SAMPLES = 32000; // 2s minimum before first inference
 
         while (flush_running_) {

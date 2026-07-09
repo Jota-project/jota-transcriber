@@ -151,6 +151,9 @@ ServerConfig configFromEnv() {
     if (auto v = env("WHISPER_LOGPROB_THOLD"); !v.empty())
         cfg.whisper_logprob_thold = std::stof(v);
 
+    if (auto v = env("FLUSH_MIN_NEW_AUDIO_MS"); !v.empty())
+        cfg.flush_min_new_audio_ms = std::stoi(v);
+
     if (auto v = env("SHUTDOWN_TIMEOUT_SEC"); !v.empty())
         cfg.shutdown_timeout_sec = std::stoi(v);
 
@@ -173,7 +176,8 @@ void printUsage(const char* binary) {
               << " [--whisper-beam-size N] [--whisper-threads N]"
               << " [--max-concurrent-inference N] [--model-cache-ttl N]"
               << " [--whisper-initial-prompt TEXT] [--session-timeout-sec N] [--shutdown-timeout-sec N]"
-              << " [--env-file path]" 
+              << " [--flush-min-new-audio-ms N]"
+              << " [--env-file path]"
               << " [--max-upload-bytes N]" << std::endl;
     std::cout << "All options can also be set via environment variables (or a .env file):" << std::endl;
     std::cout << "  MODEL_PATH, BIND_ADDRESS, PORT," << std::endl;
@@ -183,6 +187,7 @@ void printUsage(const char* binary) {
     std::cout << "  MODEL_CACHE_TTL, WHISPER_INITIAL_PROMPT, SESSION_TIMEOUT_SEC, SHUTDOWN_TIMEOUT_SEC," << std::endl;
     std::cout << "  WHISPER_TEMPERATURE, WHISPER_TEMPERATURE_INC," << std::endl;
     std::cout << "  WHISPER_NO_SPEECH_THOLD, WHISPER_LOGPROB_THOLD" << std::endl;
+    std::cout << "  FLUSH_MIN_NEW_AUDIO_MS" << std::endl;
     std::cout << "  MAX_UPLOAD_BYTES" << std::endl;
     std::cout << "CLI arguments override environment variables." << std::endl;
 }
@@ -254,6 +259,8 @@ ServerConfig parseArgs(int argc, char* argv[]) {
             config.whisper_no_speech_thold = std::stof(argv[++i]);
         } else if (arg == "--whisper-logprob-thold" && i + 1 < argc) {
             config.whisper_logprob_thold = std::stof(argv[++i]);
+        } else if (arg == "--flush-min-new-audio-ms" && i + 1 < argc) {
+            config.flush_min_new_audio_ms = std::stoi(argv[++i]);
         } else if (arg == "--thread-safe") {
             // accepted for backwards compatibility
         } else if (arg.rfind("--", 0) != 0 &&
@@ -348,7 +355,8 @@ void handleSession(tcp::socket socket,
                 config.whisper_beam_size, config.whisper_threads,
                 config.whisper_initial_prompt, config.session_timeout_sec,
                 config.whisper_temperature, config.whisper_temperature_inc,
-                config.whisper_no_speech_thold, config.whisper_logprob_thold);
+                config.whisper_no_speech_thold, config.whisper_logprob_thold,
+                config.flush_min_new_audio_ms);
             session->run(req);
         } else {
             boost::beast::http::read(socket, buffer, parser);
@@ -370,7 +378,8 @@ void handleSession(tcp::socket socket,
                 config.whisper_beam_size, config.whisper_threads,
                 config.whisper_initial_prompt, config.session_timeout_sec,
                 config.whisper_temperature, config.whisper_temperature_inc,
-                config.whisper_no_speech_thold, config.whisper_logprob_thold);
+                config.whisper_no_speech_thold, config.whisper_logprob_thold,
+                config.flush_min_new_audio_ms);
             session->run(req);
         }
     } catch (std::exception& e) {
@@ -412,6 +421,7 @@ int main(int argc, char* argv[]) {
                   "  temperature_inc=" + std::to_string(config.whisper_temperature_inc) +
                   "  no_speech_thold=" + std::to_string(config.whisper_no_speech_thold) +
                   "  logprob_thold=" + std::to_string(config.whisper_logprob_thold));
+        Log::info("Flush:   min_new_audio_ms=" + std::to_string(config.flush_min_new_audio_ms));
         if (!config.whisper_initial_prompt.empty()) {
             Log::info("Whisper: initial_prompt=\"" + config.whisper_initial_prompt + "\"");
         }
