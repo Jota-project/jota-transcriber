@@ -385,13 +385,26 @@ private:
         stopFlushLoop();
 
         std::string final_text;
+        bool complete = true;
+        std::string incomplete_reason;
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             if (engine_) {
-                auto res = engine_->transcribeSlidingWindow(true); // force commit
-                // Note: no hallucination guard here — this is the last chance to capture audio
-                // that the engine still holds in its buffer.
-                full_transcription_ += res.committed_text;
+                // Bounded wait: don't let the final decode compete indefinitely for a
+                // saturated GPU (jota-project/jota-transcriber#62). If no slot frees up
+                // within the timeout, fall back to whatever was already committed instead
+                // of blocking session close indefinitely.
+                InferenceLimiter::TryGuard guard(std::chrono::milliseconds(3000));
+                if (guard.acquired()) {
+                    auto res = engine_->transcribeSlidingWindow(true); // force commit
+                    // Note: no hallucination guard here — this is the last chance to capture audio
+                    // that the engine still holds in its buffer.
+                    full_transcription_ += res.committed_text;
+                } else {
+                    complete = false;
+                    incomplete_reason = "gpu_saturated_timeout";
+                    Log::warn("handleEnd: timeout esperando slot de inferencia, usando texto parcial/raw acumulado", session_id_);
+                }
             }
 
             // Fallback: if all flushLoop commits were hallucination-filtered (audio was erased
@@ -412,6 +425,10 @@ private:
             {"text", final_text},
             {"is_final", true}
         };
+        if (!complete) {
+            msg["complete"] = false;
+            msg["reason"] = incomplete_reason;
+        }
         sendMessage(msg);
 
         try {

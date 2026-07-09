@@ -284,6 +284,26 @@ TEST_F(StreamingSessionTest, ExactlyOneIsFinalAndIsLastMessage) {
         << "Last message must be is_final=true, but got: " << msgs.back().dump();
 }
 
+TEST_F(StreamingSessionTest, HandleEndFallsBackWhenGpuSaturated) {
+    auto port = startServer(false);
+    auto client = connect(port);
+
+    client.sendJson({{"type", "config"}, {"language", "es"}});
+    EXPECT_EQ(client.recvJson()["type"], "ready");
+
+    // SetUp() fija max_concurrency=1. Ocupamos el único slot durante todo
+    // el test para forzar que el TryGuard acotado de handleEnd() (3s) expire.
+    InferenceLimiter::Guard occupied;
+
+    client.sendJson({{"type", "end"}});
+    auto trans = client.recvJson();
+
+    EXPECT_EQ(trans["type"], "transcription");
+    EXPECT_TRUE(trans["is_final"]);
+    EXPECT_EQ(trans["complete"], false);
+    EXPECT_EQ(trans["reason"], "gpu_saturated_timeout");
+}
+
 TEST_F(StreamingSessionTest, DoubleConfig) {
     auto port = startServer(false);
     auto client = connect(port);
