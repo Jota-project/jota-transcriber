@@ -13,6 +13,7 @@
 #include <thread>
 #include <memory>
 #include <atomic>
+#include <cstring>
 
 namespace beast = boost::beast;
 namespace http = beast::http;
@@ -284,6 +285,56 @@ TEST_F(StreamingSessionTest, ExactlyOneIsFinalAndIsLastMessage) {
         << "Last message must be is_final=true, but got: " << msgs.back().dump();
 }
 
+TEST_F(StreamingSessionTest, HandleEndFallsBackWhenGpuSaturated) {
+    auto port = startServer(false);
+    auto client = connect(port);
+
+    client.sendJson({{"type", "config"}, {"language", "es"}});
+    EXPECT_EQ(client.recvJson()["type"], "ready");
+
+    // SetUp() fija max_concurrency=1. Ocupamos el único slot durante todo
+    // el test para forzar que el TryGuard acotado de handleEnd() (3s) expire.
+    InferenceLimiter::Guard occupied;
+
+    client.sendJson({{"type", "end"}});
+    auto trans = client.recvJson();
+
+    EXPECT_EQ(trans["type"], "transcription");
+    EXPECT_TRUE(trans["is_final"]);
+    EXPECT_EQ(trans["complete"], false);
+    EXPECT_EQ(trans["reason"], "gpu_saturated_timeout");
+}
+
+TEST_F(StreamingSessionTest, EmitsStatusBusyThenOkAroundGpuSaturation) {
+    auto port = startServer(false);
+    auto client = connect(port);
+
+    client.sendJson({{"type", "config"}, {"language", "es"}});
+    EXPECT_EQ(client.recvJson()["type"], "ready");
+
+    // Ocupamos el único slot (max_concurrency=1) para que el flushLoop de
+    // esta sesión no pueda adquirirlo.
+    auto occupied = std::make_unique<InferenceLimiter::Guard>();
+
+    // >2s de silencio @16kHz float32 — cruza MIN_BUFFER_SAMPLES (2s) y
+    // dispara el intento de inferencia en flushLoop.
+    std::vector<float> silence(33600, 0.0f);
+    std::vector<unsigned char> bytes(silence.size() * sizeof(float));
+    std::memcpy(bytes.data(), silence.data(), bytes.size());
+    client.sendBinary(bytes);
+
+    auto status1 = client.recvJson();
+    EXPECT_EQ(status1["type"], "status");
+    EXPECT_EQ(status1["state"], "busy");
+    EXPECT_EQ(status1["reason"], "gpu_saturated");
+
+    occupied.reset(); // libera el slot
+
+    auto status2 = client.recvJson();
+    EXPECT_EQ(status2["type"], "status");
+    EXPECT_EQ(status2["state"], "ok");
+}
+
 TEST_F(StreamingSessionTest, DoubleConfig) {
     auto port = startServer(false);
     auto client = connect(port);
@@ -297,4 +348,11 @@ TEST_F(StreamingSessionTest, DoubleConfig) {
     auto msg2 = client.recvJson();
     EXPECT_EQ(msg2["type"], "ready");
     EXPECT_EQ(msg2["config"]["language"], "en");
+}
+
+TEST(MsToSamples16kHzTest, ConvertsMillisecondsToSampleCount) {
+    EXPECT_EQ(msToSamples16kHz(500), 8000u);
+    EXPECT_EQ(msToSamples16kHz(250), 4000u);   // valor por defecto anterior
+    EXPECT_EQ(msToSamples16kHz(1000), 16000u);
+    EXPECT_EQ(msToSamples16kHz(0), 0u);
 }

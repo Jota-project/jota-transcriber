@@ -29,6 +29,7 @@ struct ServerConfig {
     float whisper_temperature_inc = 0.0f;   // temperature increment on repetition (0.0 disables fallback)
     float whisper_no_speech_thold = 0.3f;   // probability threshold to reject non-speech segments
     float whisper_logprob_thold = -0.7f;    // log-prob threshold to reject low-confidence segments (-1.0=disabled)
+    int flush_min_new_audio_ms = 500;       // ms of new audio required before flushLoop re-runs inference (was hardcoded 250ms)
 
     int shutdown_timeout_sec = 10;      // max seconds to wait for sessions to close on SIGINT/SIGTERM
     size_t max_upload_bytes = 25 * 1024 * 1024; // 25 MB — matches OpenAI limit

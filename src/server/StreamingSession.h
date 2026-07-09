@@ -29,6 +29,11 @@ namespace net = boost::asio;
 using tcp = net::ip::tcp;
 using json = nlohmann::json;
 
+// ms of audio @16kHz mono float32 → sample count.
+inline size_t msToSamples16kHz(int ms) {
+    return static_cast<size_t>(ms) * 16;
+}
+
 template <class StreamType>
 class StreamingSession : public std::enable_shared_from_this<StreamingSession<StreamType>>, public SessionTracker::SessionBase {
 public:
@@ -43,13 +48,15 @@ public:
         float whisper_temperature = 0.2f,
         float whisper_temperature_inc = 0.2f,
         float whisper_no_speech_thold = 0.3f,
-        float whisper_logprob_thold = -1.0f
+        float whisper_logprob_thold = -1.0f,
+        int flush_min_new_audio_ms = 500
     )
         : ws_(std::move(ws)),
           model_path_(model_path),
           auth_manager_(auth_manager),
           configured_(false),
           buffer_overflowed_(false),
+          capacity_degraded_(false),
           last_transcribed_size_(0),
           language_("es"),
           whisper_beam_size_(whisper_beam_size),
@@ -60,6 +67,7 @@ public:
           whisper_temperature_inc_(whisper_temperature_inc),
           whisper_no_speech_thold_(whisper_no_speech_thold),
           whisper_logprob_thold_(whisper_logprob_thold),
+          flush_min_new_audio_ms_(flush_min_new_audio_ms),
           model_acquired_(false),
           bytes_received_in_window_(0),
           rate_limit_start_(std::chrono::steady_clock::now()),
@@ -358,6 +366,7 @@ private:
 
                 configured_ = true;
                 last_transcribed_size_ = 0;
+                capacity_degraded_ = false;
                 full_transcription_    = "";
                 raw_transcription_     = "";
                 last_audio_time_ = std::chrono::steady_clock::now();
@@ -385,13 +394,26 @@ private:
         stopFlushLoop();
 
         std::string final_text;
+        bool complete = true;
+        std::string incomplete_reason;
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             if (engine_) {
-                auto res = engine_->transcribeSlidingWindow(true); // force commit
-                // Note: no hallucination guard here — this is the last chance to capture audio
-                // that the engine still holds in its buffer.
-                full_transcription_ += res.committed_text;
+                // Bounded wait: don't let the final decode compete indefinitely for a
+                // saturated GPU (jota-project/jota-transcriber#62). If no slot frees up
+                // within the timeout, fall back to whatever was already committed instead
+                // of blocking session close indefinitely.
+                InferenceLimiter::TryGuard guard(std::chrono::milliseconds(3000));
+                if (guard.acquired()) {
+                    auto res = engine_->transcribeSlidingWindow(true); // force commit
+                    // Note: no hallucination guard here — this is the last chance to capture audio
+                    // that the engine still holds in its buffer.
+                    full_transcription_ += res.committed_text;
+                } else {
+                    complete = false;
+                    incomplete_reason = "gpu_saturated_timeout";
+                    Log::warn("handleEnd: timeout esperando slot de inferencia, usando texto parcial/raw acumulado", session_id_);
+                }
             }
 
             // Fallback: if all flushLoop commits were hallucination-filtered (audio was erased
@@ -412,6 +434,10 @@ private:
             {"text", final_text},
             {"is_final", true}
         };
+        if (!complete) {
+            msg["complete"] = false;
+            msg["reason"] = incomplete_reason;
+        }
         sendMessage(msg);
 
         try {
@@ -449,6 +475,7 @@ private:
     std::string session_id_;
     bool configured_;
     bool buffer_overflowed_; // true while engine buffer is above 20s HWM
+    bool capacity_degraded_; // true while this session's own inference cycles are being skipped (GPU saturated)
     size_t last_transcribed_size_;
     std::string language_;
 
@@ -461,6 +488,7 @@ private:
     float whisper_temperature_inc_;
     float whisper_no_speech_thold_;
     float whisper_logprob_thold_;
+    int flush_min_new_audio_ms_;
     bool model_acquired_;
     
     // Rate limiting & Timeout
@@ -497,7 +525,7 @@ private:
         // Handles ALL inference, decoupled from the WebSocket receive loop.
         // Triggers on: 250ms of new audio accumulated, OR 400ms of silence with unprocessed audio.
         // Does NOT trigger if buffer < 2s: Whisper hallucinates badly on very short windows.
-        const size_t MIN_NEW_SAMPLES    = 4000;  // 250ms @ 16kHz
+        const size_t MIN_NEW_SAMPLES    = msToSamples16kHz(flush_min_new_audio_ms_);
         const size_t MIN_BUFFER_SAMPLES = 32000; // 2s minimum before first inference
 
         while (flush_running_) {
@@ -536,7 +564,21 @@ private:
             InferenceLimiter::TryGuard inf_guard;
             if (!inf_guard.acquired()) {
                 Log::debug("flushLoop: GPU busy, skipping inference cycle", session_id_);
+                if (!capacity_degraded_) {
+                    capacity_degraded_ = true;
+                    Log::warn("flushLoop: entrando en estado busy (gpu_saturated)", session_id_);
+                    lock.unlock();
+                    sendMessage({{"type", "status"}, {"state", "busy"}, {"reason", "gpu_saturated"}});
+                    lock.lock();
+                }
                 continue;
+            }
+            if (capacity_degraded_) {
+                capacity_degraded_ = false;
+                Log::info("flushLoop: saliendo de estado busy", session_id_);
+                lock.unlock();
+                sendMessage({{"type", "status"}, {"state", "ok"}});
+                lock.lock();
             }
             auto res = engine_->transcribeSlidingWindow(false);
             // inf_guard releases the slot automatically on scope exit (including exceptions)
