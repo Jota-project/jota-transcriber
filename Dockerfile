@@ -1,5 +1,5 @@
 # Build Stage
-FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS builder
+FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -52,10 +52,11 @@ RUN cmake -B build \
     -DBUILD_SERVER=ON \
     -DBUILD_TESTS=OFF \
     -DBUILD_SHARED_LIBS=OFF \
-    -DGGML_CUDA=1
+    -DGGML_CUDA=1 \
+    -DCMAKE_CUDA_ARCHITECTURES=61
 
 # Compila whisper + ggml (incluye kernels CUDA — la parte lenta).
-RUN cmake --build build --target whisper -j$(nproc)
+RUN cmake --build build --target whisper -j2
 
 # ── Fase B: código del servidor ────────────────────────────────────────────
 # Solo se invalida cuando cambia src/ o generate_certs.sh.
@@ -68,10 +69,10 @@ RUN cmake -B build \
     -DBUILD_TESTS=OFF \
     -DBUILD_SHARED_LIBS=OFF \
     -DGGML_CUDA=1
-RUN cmake --build build --target jota-transcriber -j$(nproc)
+RUN cmake --build build --target jota-transcriber -j2
 
 # Runtime Stage
-FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04 AS runtime
+FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 
