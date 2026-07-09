@@ -1,3 +1,17 @@
+# [1.2.0](https://github.com/Jota-project/jota-transcriber/compare/v1.1.7...v1.2.0) (2026-07-09)
+
+
+### Bug Fixes
+
+* bound handleEnd() final decode wait and surface capacity fallback to client ([fe43a83](https://github.com/Jota-project/jota-transcriber/commit/fe43a8329a3519537029ba2d0375d0fda37a8102))
+
+
+### Features
+
+* add bounded-wait try_acquire_for to InferenceLimiter ([a80da50](https://github.com/Jota-project/jota-transcriber/commit/a80da50299ddb683b900330b18cfb8e2ce9e8f27))
+* emit per-session type:status on GPU saturation transitions ([3d699cd](https://github.com/Jota-project/jota-transcriber/commit/3d699cd10d40511bb77b548f0d8f4ff983bf21ea))
+* make flushLoop re-inference cadence configurable (flush_min_new_audio_ms) ([2a01cf8](https://github.com/Jota-project/jota-transcriber/commit/2a01cf8386762009f67948c768ef6b0e489ba3b6))
+
 ## [1.1.7](https://github.com/Jota-project/jota-transcriber/compare/v1.1.6...v1.1.7) (2026-07-09)
 
 
