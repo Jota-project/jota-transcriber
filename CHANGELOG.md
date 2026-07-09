@@ -1,3 +1,11 @@
+## [1.1.7](https://github.com/Jota-project/jota-transcriber/compare/v1.1.6...v1.1.7) (2026-07-09)
+
+
+### Bug Fixes
+
+* downgrade CUDA 12.8 → 12.2 for GTX 1060 (Pascal) GPU compatibility ([#63](https://github.com/Jota-project/jota-transcriber/issues/63)) ([d0b63bd](https://github.com/Jota-project/jota-transcriber/commit/d0b63bd53a7d33b6c1e4a2cb26315eb6621a617e))
+* downgrade CUDA toolkit from 12.8 to 12.2 for Pascal GPU compatibility ([339b4ce](https://github.com/Jota-project/jota-transcriber/commit/339b4ce479b3a24248af73fd8374765aa2c74a55))
+
 ## [1.1.6](https://github.com/Jota-project/jota-transcriber/compare/v1.1.5...v1.1.6) (2026-05-12)
 
 
