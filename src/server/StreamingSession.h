@@ -64,10 +64,14 @@ public:
           bytes_received_in_window_(0),
           rate_limit_start_(std::chrono::steady_clock::now()),
           flush_running_(false),
-          last_audio_time_(std::chrono::steady_clock::now())
+          last_audio_time_(std::chrono::steady_clock::now()),
+          hallucination_config_(getHallucinationConfigForModel(model_path))
     {
         session_id_ = generateSessionId();
-        Log::info("Session created", session_id_);
+        Log::info("Session created (hallucination_config: max_consec=" +
+ std::to_string(hallucination_config_.max_consecutive) +
+                  ", max_bigrams=" + std::to_string(hallucination_config_.max_repeated_bigrams) + ")",
+                  session_id_);
         SessionTracker::instance().add(this);
     }
 
@@ -78,7 +82,6 @@ public:
     }
 
     void shutdown() override {
-        // Triggered asynchronously by signal handler. We try to close cleanly if we can.
         boost::system::error_code ec;
         beast::get_lowest_layer(ws_).cancel(ec);
     }
@@ -87,7 +90,6 @@ public:
     void run(const Req& req) {
         try {
             if (session_timeout_sec_ > 0) {
-                // Set native socket receive timeout to drop idle/zombie connections
                 auto native_socket = beast::get_lowest_layer(ws_).native_handle();
 #if defined(_WIN32)
                 DWORD timeout = session_timeout_sec_ * 1000;
@@ -202,7 +204,6 @@ private:
             };
             sendMessage(warning);
         }
-        // Inference is handled entirely by flushLoop to avoid blocking the receive loop.
     }
 
     void handleJsonMessage(const std::string& message) {
@@ -240,9 +241,7 @@ private:
     }
 
     void handleBinaryMessage(const std::vector<unsigned char>& data) {
-        // Guard: reject oversized frames immediately — 1 MB = ~16s of float32 audio @ 16kHz,
-        // far beyond any legitimate streaming chunk.
-        constexpr size_t MAX_FRAME_BYTES = 1 * 1024 * 1024; // 1 MB
+        constexpr size_t MAX_FRAME_BYTES = 1 * 1024 * 1024;
         if (data.size() > MAX_FRAME_BYTES) {
             Log::warn("Binary frame too large (" + std::to_string(data.size()) +
                       " bytes > 1MB limit), closing connection", session_id_);
@@ -252,7 +251,6 @@ private:
         }
 
         if (data.size() < sizeof(float)) {
-            Log::warn("Binary frame too small for float32 (" + std::to_string(data.size()) + " bytes), ignoring", session_id_);
             return;
         }
 
@@ -267,15 +265,12 @@ private:
             return;
         }
 
-        // Enforce Binary Rate Limit (QoS) — only count frames that pass all validation guards.
         auto now = std::chrono::steady_clock::now();
         auto elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(now - rate_limit_start_).count();
 
         bytes_received_in_window_ += data.size();
 
         if (elapsed_s >= 3) {
-            // Fixed 3-second window: max 600 KB per window (~200 KB/s average).
-            // Note: this is a fixed window, not sliding — resets every 3 seconds.
             const size_t MAX_BYTES_PER_WINDOW = 200 * 1024 * 3;
             if (bytes_received_in_window_ > MAX_BYTES_PER_WINDOW) {
                 Log::warn("Rate limit exceeded (" + std::to_string(bytes_received_in_window_) +
@@ -328,21 +323,18 @@ private:
                 language_ = msg["language"];
             }
 
-            // VAD configure (0.0 = disabled, try a safe 0.4 for long silences only if enabled by client)
             float vad_thold = 0.0f;
             if (msg.contains("vad_thold") && msg["vad_thold"].is_number()) {
                 vad_thold = msg["vad_thold"].get<float>();
             }
 
-            // Acquire model from cache (loads if not already loaded, instant if cached)
             Log::info("Acquiring model from cache: " + model_path_, session_id_);
             whisper_context* ctx = ModelCache::instance().acquire(model_path_);
-            
+
             {
                 std::lock_guard<std::mutex> lock(state_mutex_);
                 model_acquired_ = true;
 
-                // Create engine with shared context (creates its own whisper_state)
                 engine_ = std::make_unique<StreamingWhisperEngine>(ctx);
                 engine_->setLanguage(language_);
                 engine_->setThreads(whisper_threads_);
@@ -378,31 +370,30 @@ private:
     void handleEnd() {
         Log::info("End-of-stream received, running final transcription", session_id_);
 
-        // Stop flushLoop BEFORE running final inference. This is the fix for the race
-        // condition (Jota-project/jota-transcriber#27): without this join, flushLoop can
-        // wake up and send another message between our sendMessage(is_final=true) and
-        // ws_.close(), or race ws_.close() with a concurrent ws_.write().
         stopFlushLoop();
 
         std::string final_text;
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             if (engine_) {
-                auto res = engine_->transcribeSlidingWindow(true); // force commit
-                // Note: no hallucination guard here — this is the last chance to capture audio
-                // that the engine still holds in its buffer.
-                full_transcription_ += res.committed_text;
+                auto res = engine_->transcribeSlidingWindow(true);
+                std::string final_text_to_add = res.committed_text;
+                if (isHallucination(res.committed_text, hallucination_config_)) {
+                    final_text_to_add = cleanHallucination(res.committed_text, hallucination_config_);
+                    Log::warn("Final commit hallucination cleaned (orig_len=" +
+                              std::to_string(res.committed_text.length()) +
+                              ", clean_len=" + std::to_string(final_text_to_add.length()) + ")", session_id_);
+                }
+                if (!final_text_to_add.empty()) {
+                    full_transcription_ += final_text_to_add;
+                }
             }
 
-            // Fallback: if all flushLoop commits were hallucination-filtered (audio was erased
-            // from the engine buffer but text was discarded), full_transcription_ is empty.
-            // Use the raw accumulated text so the client receives something rather than nothing.
             if (full_transcription_.empty() && !raw_transcription_.empty()) {
-                Log::warn("full_transcription_ empty at end-of-session — using raw fallback (all commits were hallucination-filtered)", session_id_);
+                Log::warn("full_transcription_ empty at end-of-session — using raw fallback", session_id_);
                 full_transcription_ = raw_transcription_;
             }
 
-            // Copy under the mutex so the read below is not a data race.
             final_text = full_transcription_;
         }
 
@@ -415,8 +406,6 @@ private:
         sendMessage(msg);
 
         try {
-            // ws_.close() must be serialized with ws_.write() via write_mutex_.
-            // Beast does not support concurrent close + write on the same stream.
             std::lock_guard<std::mutex> lock(write_mutex_);
             ws_.close(websocket::close_code::normal);
             Log::info("Session closed normally", session_id_);
@@ -441,18 +430,16 @@ private:
         return oss.str();
     }
 
-    // Member variables
     StreamType ws_;
     std::string model_path_;
     std::shared_ptr<AuthManager> auth_manager_;
     std::unique_ptr<StreamingWhisperEngine> engine_;
     std::string session_id_;
     bool configured_;
-    bool buffer_overflowed_; // true while engine buffer is above 20s HWM
+    bool buffer_overflowed_;
     size_t last_transcribed_size_;
     std::string language_;
 
-    // Whisper params
     int whisper_beam_size_;
     int whisper_threads_;
     std::string whisper_initial_prompt_;
@@ -462,12 +449,10 @@ private:
     float whisper_no_speech_thold_;
     float whisper_logprob_thold_;
     bool model_acquired_;
-    
-    // Rate limiting & Timeout
+
     size_t bytes_received_in_window_;
     std::chrono::steady_clock::time_point rate_limit_start_;
 
-    // Threading & Sync
     std::mutex write_mutex_;
     std::mutex state_mutex_;
     std::thread flush_thread_;
@@ -476,12 +461,11 @@ private:
     std::condition_variable flush_cv_;
     std::chrono::steady_clock::time_point last_audio_time_;
 
-    // Sliding window logic
-    std::string full_transcription_;     // filtered (hallucinations discarded)
-    std::string raw_transcription_;      // unfiltered fallback — used when full_ is empty at handleEnd()
+    std::string full_transcription_;
+    std::string raw_transcription_;
 
-    // Signal flushLoop to stop and wait until it exits. Safe to call multiple times
-    // (flush_thread_.joinable() returns false after the first join).
+    HallucinationConfig hallucination_config_;
+
     void stopFlushLoop() {
         {
             std::lock_guard<std::mutex> lk(flush_cv_mutex_);
@@ -494,11 +478,8 @@ private:
     }
 
     void flushLoop() {
-        // Handles ALL inference, decoupled from the WebSocket receive loop.
-        // Triggers on: 250ms of new audio accumulated, OR 400ms of silence with unprocessed audio.
-        // Does NOT trigger if buffer < 2s: Whisper hallucinates badly on very short windows.
-        const size_t MIN_NEW_SAMPLES    = 4000;  // 250ms @ 16kHz
-        const size_t MIN_BUFFER_SAMPLES = 32000; // 2s minimum before first inference
+        const size_t MIN_NEW_SAMPLES    = 4000;
+        const size_t MIN_BUFFER_SAMPLES = 32000;
 
         while (flush_running_) {
             {
@@ -517,7 +498,6 @@ private:
 
             size_t current_size = engine_->getBufferSize();
 
-            // Guard: never infer on less than 2s of audio.
             if (current_size < MIN_BUFFER_SAMPLES) continue;
 
             auto now = std::chrono::steady_clock::now();
@@ -530,52 +510,52 @@ private:
 
             Log::debug("flushLoop inference: new=" + std::to_string(current_size - last_transcribed_size_) +
                        " silence_ms=" + std::to_string(elapsed_ms), session_id_);
-            // Non-blocking inference: skip cycle if GPU is saturated.
-            // Lock order: state_mutex_ (already held) → InferenceLimiter::mutex_ (taken inside TryGuard).
-            // No inversion risk: InferenceLimiter never acquires state_mutex_.
             InferenceLimiter::TryGuard inf_guard;
             if (!inf_guard.acquired()) {
                 Log::debug("flushLoop: GPU busy, skipping inference cycle", session_id_);
                 continue;
             }
             auto res = engine_->transcribeSlidingWindow(false);
-            // inf_guard releases the slot automatically on scope exit (including exceptions)
 
-            // If inference drained the buffer below HWM, reset the overflow flag so the
-            // next saturation episode triggers a new warning regardless of client audio timing.
             constexpr size_t HIGH_WATER_MARK = 16000 * 20;
             if (buffer_overflowed_ && engine_->getBufferSize() < HIGH_WATER_MARK) {
                 buffer_overflowed_ = false;
             }
 
-            // Hallucination guard: filter loops before updating state or sending to client.
-            bool committed_ok = !res.committed_text.empty() && !isHallucination(res.committed_text);
-            bool partial_ok   = !res.partial_text.empty()   && !isHallucination(res.partial_text);
+            bool committed_hallucinated = isHallucination(res.committed_text, hallucination_config_);
+            bool partial_hallucinated = isHallucination(res.partial_text, hallucination_config_);
+
+            std::string committed_text_to_use = res.committed_text;
+            std::string partial_text_to_use = res.partial_text;
+
+            if (committed_hallucinated && !res.committed_text.empty()) {
+                committed_text_to_use = cleanHallucination(res.committed_text, hallucination_config_);
+                Log::warn("Hallucination detected in commit, cleaned (orig_len=" +
+                          std::to_string(res.committed_text.length()) +
+                          ", clean_len=" + std::to_string(committed_text_to_use.length()) + "): '" +
+                          committed_text_to_use.substr(0, 80) + "'", session_id_);
+            }
+
+            if (partial_hallucinated && !res.partial_text.empty()) {
+                partial_text_to_use = cleanHallucination(res.partial_text, hallucination_config_);
+                Log::warn("Hallucination detected in partial, cleaned (orig_len=" +
+                          std::to_string(res.partial_text.length()) +
+                          ", clean_len=" + std::to_string(partial_text_to_use.length()) + "): '" +
+                          partial_text_to_use.substr(0, 80) + "'", session_id_);
+            }
 
             if (!res.committed_text.empty()) {
-                // Always accumulate raw — audio was already erased from engine buffer,
-                // so this is the only copy left. Used as fallback in handleEnd() if all
-                // commits were hallucination-filtered and full_transcription_ ends up empty.
                 raw_transcription_ += res.committed_text;
-                if (committed_ok) {
-                    full_transcription_ += res.committed_text;
-                } else {
-                    Log::warn("Dropping hallucinated commit (len=" +
-                              std::to_string(res.committed_text.length()) + "): '" +
-                              res.committed_text.substr(0, 80) + "'", session_id_);
+                if (!committed_text_to_use.empty()) {
+                    full_transcription_ += committed_text_to_use;
                 }
                 last_transcribed_size_ = engine_->getBufferSize();
             } else {
                 last_transcribed_size_ = current_size;
             }
 
-            if (!res.partial_text.empty() && !partial_ok) {
-                Log::warn("Suppressing hallucinated partial (len=" +
-                          std::to_string(res.partial_text.length()) + ")", session_id_);
-            }
-
-            if (committed_ok || partial_ok) {
-                std::string merged = full_transcription_ + (partial_ok ? res.partial_text : "");
+            if (!committed_text_to_use.empty() || !partial_text_to_use.empty()) {
+                std::string merged = full_transcription_ + partial_text_to_use;
                 json msg = {
                     {"type", "transcription"},
                     {"text", merged},
