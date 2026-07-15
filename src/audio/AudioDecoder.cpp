@@ -140,6 +140,8 @@ std::vector<float> AudioDecoder::decode(const std::vector<uint8_t>& data) {
     av_opt_set_chlayout(swr, "in_chlayout",  &codec_ctx->ch_layout, 0);
     av_opt_set_chlayout(swr, "out_chlayout", &out_layout, 0);
 #else
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
     int64_t in_layout = codec_ctx->channel_layout
         ? codec_ctx->channel_layout
         : av_get_default_channel_layout(codec_ctx->channels);
@@ -147,6 +149,7 @@ std::vector<float> AudioDecoder::decode(const std::vector<uint8_t>& data) {
     av_opt_set_int(swr, "out_channel_layout", AV_CH_LAYOUT_MONO,  0);
     av_opt_set_int(swr, "in_channel_count",   codec_ctx->channels,0);
     av_opt_set_int(swr, "out_channel_count",  1,                  0);
+#pragma GCC diagnostic pop
 #endif
     av_opt_set_int(swr,        "in_sample_rate",  codec_ctx->sample_rate, 0);
     av_opt_set_int(swr,        "out_sample_rate", 16000,                  0);
