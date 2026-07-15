@@ -14,6 +14,7 @@
 #include <unordered_map>
 #include <nlohmann/json.hpp>
 #include <iostream>
+#include <cfloat>
 #include "whisper/StreamingWhisperEngine.h"
 #include "whisper/ModelCache.h"
 #include "server/SessionTracker.h"
@@ -49,7 +50,14 @@ public:
         float whisper_temperature_inc = 0.2f,
         float whisper_no_speech_thold = 0.3f,
         float whisper_logprob_thold = -1.0f,
-        int flush_min_new_audio_ms = 500
+        int flush_min_new_audio_ms = 500,
+        const std::string& vad_model_path = "",
+        float vad_threshold = 0.5f,
+        int vad_min_speech_ms = 250,
+        int vad_min_silence_ms = 2000,
+        float vad_max_speech_s = FLT_MAX,
+        int vad_speech_pad_ms = 400,
+        float vad_samples_overlap = 0.1f
     )
         : ws_(std::move(ws)),
           model_path_(model_path),
@@ -68,6 +76,13 @@ public:
           whisper_no_speech_thold_(whisper_no_speech_thold),
           whisper_logprob_thold_(whisper_logprob_thold),
           flush_min_new_audio_ms_(flush_min_new_audio_ms),
+          vad_model_path_(vad_model_path),
+          vad_threshold_(vad_threshold),
+          vad_min_speech_ms_(vad_min_speech_ms),
+          vad_min_silence_ms_(vad_min_silence_ms),
+          vad_max_speech_s_(vad_max_speech_s),
+          vad_speech_pad_ms_(vad_speech_pad_ms),
+          vad_samples_overlap_(vad_samples_overlap),
           model_acquired_(false),
           bytes_received_in_window_(0),
           rate_limit_start_(std::chrono::steady_clock::now()),
@@ -360,6 +375,12 @@ private:
                 engine_->setTemperatureInc(whisper_temperature_inc_);
                 engine_->setNoSpeechThreshold(whisper_no_speech_thold_);
                 engine_->setLogprobThreshold(whisper_logprob_thold_);
+                if (!vad_model_path_.empty()) {
+                    engine_->setVadConfig(vad_model_path_, vad_threshold_,
+                                          vad_min_speech_ms_, vad_min_silence_ms_,
+                                          vad_max_speech_s_, vad_speech_pad_ms_,
+                                          vad_samples_overlap_);
+                }
                 if (!whisper_initial_prompt_.empty()) {
                     engine_->setInitialPrompt(whisper_initial_prompt_);
                 }
@@ -489,6 +510,13 @@ private:
     float whisper_no_speech_thold_;
     float whisper_logprob_thold_;
     int flush_min_new_audio_ms_;
+    std::string vad_model_path_;
+    float vad_threshold_;
+    int   vad_min_speech_ms_;
+    int   vad_min_silence_ms_;
+    float vad_max_speech_s_;
+    int   vad_speech_pad_ms_;
+    float vad_samples_overlap_;
     bool model_acquired_;
     
     // Rate limiting & Timeout

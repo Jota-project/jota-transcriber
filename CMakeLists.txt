@@ -14,6 +14,7 @@ add_subdirectory(third_party/whisper.cpp)
 # Librería StreamingWhisperEngine (independiente de Boost/OpenSSL)
 add_library(streaming_whisper
     src/whisper/StreamingWhisperEngine.cpp
+    src/whisper/VadGate.cpp
 )
 
 target_include_directories(streaming_whisper PUBLIC

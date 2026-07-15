@@ -185,8 +185,18 @@ void printUsage(const char* binary) {
               << " [--max-concurrent-inference N] [--model-cache-ttl N]"
               << " [--whisper-initial-prompt TEXT] [--session-timeout-sec N] [--shutdown-timeout-sec N]"
               << " [--flush-min-new-audio-ms N]"
+              << " [--vad-model PATH] [--vad-threshold F] [--vad-min-speech-ms N]"
+              << " [--vad-min-silence-ms N] [--vad-max-speech-s F] [--vad-speech-pad-ms N]"
+              << " [--vad-samples-overlap F]"
               << " [--env-file path]"
               << " [--max-upload-bytes N]" << std::endl;
+    std::cout << "  --vad-model PATH           VAD (Silero) model file (default: third_party/whisper.cpp/models/ggml-silero-v5.1.2.bin)\n"
+              << "  --vad-threshold F          VAD speech probability threshold (default: 0.5)\n"
+              << "  --vad-min-speech-ms N      min speech segment duration (default: 250)\n"
+              << "  --vad-min-silence-ms N     silence >= this is trimmed before Whisper (default: 2000)\n"
+              << "  --vad-max-speech-s F       max speech segment before forced split (default: unlimited)\n"
+              << "  --vad-speech-pad-ms N      audio kept each side of a kept segment (default: 400)\n"
+              << "  --vad-samples-overlap F    overlap seconds between segments (default: 0.1)\n";
     std::cout << "All options can also be set via environment variables (or a .env file):" << std::endl;
     std::cout << "  MODEL_PATH, BIND_ADDRESS, PORT," << std::endl;
     std::cout << "  AUTH_TOKEN, AUTH_API_URL, AUTH_API_SECRET, AUTH_CACHE_TTL, AUTH_API_TIMEOUT," << std::endl;
@@ -274,6 +284,20 @@ ServerConfig parseArgs(int argc, char* argv[]) {
             config.whisper_logprob_thold = std::stof(argv[++i]);
         } else if (arg == "--flush-min-new-audio-ms" && i + 1 < argc) {
             config.flush_min_new_audio_ms = std::stoi(argv[++i]);
+        } else if (arg == "--vad-model" && i + 1 < argc) {
+            config.vad_model_path = argv[++i];
+        } else if (arg == "--vad-threshold" && i + 1 < argc) {
+            config.vad_threshold = std::stof(argv[++i]);
+        } else if (arg == "--vad-min-speech-ms" && i + 1 < argc) {
+            config.vad_min_speech_ms = std::stoi(argv[++i]);
+        } else if (arg == "--vad-min-silence-ms" && i + 1 < argc) {
+            config.vad_min_silence_ms = std::stoi(argv[++i]);
+        } else if (arg == "--vad-max-speech-s" && i + 1 < argc) {
+            config.vad_max_speech_s = std::stof(argv[++i]);
+        } else if (arg == "--vad-speech-pad-ms" && i + 1 < argc) {
+            config.vad_speech_pad_ms = std::stoi(argv[++i]);
+        } else if (arg == "--vad-samples-overlap" && i + 1 < argc) {
+            config.vad_samples_overlap = std::stof(argv[++i]);
         } else if (arg == "--thread-safe") {
             // accepted for backwards compatibility
         } else if (arg.rfind("--", 0) != 0 &&
@@ -369,7 +393,11 @@ void handleSession(tcp::socket socket,
                 config.whisper_initial_prompt, config.session_timeout_sec,
                 config.whisper_temperature, config.whisper_temperature_inc,
                 config.whisper_no_speech_thold, config.whisper_logprob_thold,
-                config.flush_min_new_audio_ms);
+                config.flush_min_new_audio_ms,
+                config.vad_model_path, config.vad_threshold,
+                config.vad_min_speech_ms, config.vad_min_silence_ms,
+                config.vad_max_speech_s, config.vad_speech_pad_ms,
+                config.vad_samples_overlap);
             session->run(req);
         } else {
             boost::beast::http::read(socket, buffer, parser);
@@ -392,7 +420,11 @@ void handleSession(tcp::socket socket,
                 config.whisper_initial_prompt, config.session_timeout_sec,
                 config.whisper_temperature, config.whisper_temperature_inc,
                 config.whisper_no_speech_thold, config.whisper_logprob_thold,
-                config.flush_min_new_audio_ms);
+                config.flush_min_new_audio_ms,
+                config.vad_model_path, config.vad_threshold,
+                config.vad_min_speech_ms, config.vad_min_silence_ms,
+                config.vad_max_speech_s, config.vad_speech_pad_ms,
+                config.vad_samples_overlap);
             session->run(req);
         }
     } catch (std::exception& e) {
