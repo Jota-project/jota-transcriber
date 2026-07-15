@@ -8,6 +8,7 @@ add_executable(unit_tests
     unit/test_session_tracker.cpp
     unit/test_model_cache.cpp
     unit/test_streaming_whisper_engine.cpp
+    unit/test_vad_gate.cpp
     unit/test_streaming_session.cpp
     unit/test_audio_decoder.cpp
     unit/test_multipart_parser.cpp
