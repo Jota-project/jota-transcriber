@@ -41,20 +41,24 @@ bool TrustedProxyResolver::isTrusted(const std::string& ip) {
     bool stale = !ever_resolved_ ||
                  (now - last_resolve_ >= std::chrono::seconds(refresh_sec_));
     if (stale) {
-        std::unordered_set<std::string> fresh;
         for (const auto& host : hosts_) {
+            std::unordered_set<std::string> fresh;
             for (auto& resolved : resolver_(host)) {
                 fresh.insert(resolved);
             }
+            if (!fresh.empty()) {
+                per_host_ips_[host] = std::move(fresh);
+                ever_resolved_ = true;
+            }
+            // else: keep this host's last known-good set (fail-closed if
+            // this host has never resolved). Other hosts are unaffected.
         }
-        if (!fresh.empty()) {
-            trusted_ips_ = std::move(fresh);
-            ever_resolved_ = true;
-        }
-        // else: keep last known-good set (fail-closed if never resolved).
         last_resolve_ = now;  // bound retry cost to once per refresh window
     }
-    return trusted_ips_.count(ip) > 0;
+    for (const auto& [host, ips] : per_host_ips_) {
+        if (ips.count(ip) > 0) return true;
+    }
+    return false;
 }
 
 // static

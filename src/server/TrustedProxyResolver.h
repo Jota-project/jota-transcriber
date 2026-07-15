@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <unordered_set>
+#include <unordered_map>
 #include <functional>
 #include <mutex>
 #include <chrono>
@@ -37,7 +38,7 @@ private:
     ResolveFn resolver_;
 
     std::mutex mutex_;
-    std::unordered_set<std::string> trusted_ips_;
+    std::unordered_map<std::string, std::unordered_set<std::string>> per_host_ips_;
     std::chrono::steady_clock::time_point last_resolve_{};
     bool ever_resolved_ = false;
 };
