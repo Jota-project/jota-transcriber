@@ -17,10 +17,8 @@ std::string trim(const std::string& s) {
 }  // namespace
 
 TrustedProxyResolver::TrustedProxyResolver(const std::string& comma_separated_hosts,
-                                           int refresh_sec,
                                            ResolveFn resolver)
-    : refresh_sec_(refresh_sec),
-      resolver_(resolver ? std::move(resolver) : &TrustedProxyResolver::defaultResolver) {
+    : resolver_(resolver ? std::move(resolver) : &TrustedProxyResolver::defaultResolver) {
     std::stringstream ss(comma_separated_hosts);
     std::string item;
     while (std::getline(ss, item, ',')) {
@@ -33,28 +31,37 @@ bool TrustedProxyResolver::enabled() const {
     return !hosts_.empty();
 }
 
-bool TrustedProxyResolver::isTrusted(const std::string& ip) {
+void TrustedProxyResolver::refresh() {
+    if (hosts_.empty()) return;
+
+    // Resolve every host WITHOUT holding mutex_ — getaddrinfo can block for
+    // a long time during a DNS outage, and isTrusted() must never wait on
+    // it. Collect results locally first.
+    std::unordered_map<std::string, std::unordered_set<std::string>> resolved;
+    for (const auto& host : hosts_) {
+        std::unordered_set<std::string> fresh;
+        for (auto& ip : resolver_(host)) {
+            fresh.insert(ip);
+        }
+        if (!fresh.empty()) {
+            resolved[host] = std::move(fresh);
+        }
+        // else: this host failed to resolve this round. It's simply absent
+        // from `resolved`, so the merge below leaves per_host_ips_[host]
+        // untouched — fail-closed if it never resolved before, otherwise
+        // keeps the last known-good set for that host.
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& [host, ips] : resolved) {
+        per_host_ips_[host] = std::move(ips);
+    }
+}
+
+bool TrustedProxyResolver::isTrusted(const std::string& ip) const {
     if (hosts_.empty()) return false;
 
     std::lock_guard<std::mutex> lock(mutex_);
-    auto now = std::chrono::steady_clock::now();
-    bool stale = !ever_resolved_ ||
-                 (now - last_resolve_ >= std::chrono::seconds(refresh_sec_));
-    if (stale) {
-        for (const auto& host : hosts_) {
-            std::unordered_set<std::string> fresh;
-            for (auto& resolved : resolver_(host)) {
-                fresh.insert(resolved);
-            }
-            if (!fresh.empty()) {
-                per_host_ips_[host] = std::move(fresh);
-                ever_resolved_ = true;
-            }
-            // else: keep this host's last known-good set (fail-closed if
-            // this host has never resolved). Other hosts are unaffected.
-        }
-        last_resolve_ = now;  // bound retry cost to once per refresh window
-    }
     for (const auto& [_, ips] : per_host_ips_) {
         if (ips.count(ip) > 0) return true;
     }

@@ -5,11 +5,10 @@
 #include <unordered_map>
 #include <functional>
 #include <mutex>
-#include <chrono>
 
-// Resolves operator-configured hostnames to IPs on a refresh interval and
-// answers whether a given IP belongs to a trusted proxy. Deploy-agnostic:
-// works with k8s CoreDNS Service FQDNs and with docker-compose / localhost.
+// Resolves operator-configured hostnames to IPs and answers whether a given
+// IP belongs to a trusted proxy. Deploy-agnostic: works with k8s CoreDNS
+// Service FQDNs and with docker-compose / localhost.
 //
 // Empty host list => enabled() == false and isTrusted() always false (no-op).
 // Fail-closed: if a hostname never resolves, nobody is trusted. On a later
@@ -21,18 +20,30 @@
 // hostname then won't match and silently fails closed (not a security
 // hole, but worth knowing when troubleshooting).
 //
-// isTrusted() is called only from the single-threaded accept loop; the mutex
-// is defensive and also lets tests drive it safely.
+// Concurrency model: refresh() does the (potentially slow) DNS I/O and does
+// NOT hold `mutex_` while calling `resolver_` — only while merging the
+// freshly resolved data into `per_host_ips_`. isTrusted() is a pure,
+// non-blocking cache read (lock + set lookup) and is safe to call
+// concurrently with refresh() from a different thread. In production,
+// isTrusted() runs on the accept-loop thread while a separate background
+// thread calls refresh() on a timer (see server.cpp) — this class does not
+// own or manage that thread itself.
 class TrustedProxyResolver {
 public:
     using ResolveFn = std::function<std::vector<std::string>(const std::string&)>;
 
     // resolver defaults to defaultResolver() when empty.
     TrustedProxyResolver(const std::string& comma_separated_hosts,
-                         int refresh_sec,
                          ResolveFn resolver = {});
 
-    bool isTrusted(const std::string& ip);
+    // Re-resolves every configured host and merges successes into the
+    // cached set. Safe to call from any thread; never blocks isTrusted().
+    void refresh();
+
+    // Pure cache read: true if `ip` belongs to any trusted host's last
+    // successfully resolved IP set. Never does I/O, never blocks.
+    bool isTrusted(const std::string& ip) const;
+
     bool enabled() const;
 
     // getaddrinfo-backed resolver (IPv4 + IPv6). Returns empty on failure.
@@ -40,11 +51,8 @@ public:
 
 private:
     std::vector<std::string> hosts_;
-    int refresh_sec_;
     ResolveFn resolver_;
 
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::unordered_map<std::string, std::unordered_set<std::string>> per_host_ips_;
-    std::chrono::steady_clock::time_point last_resolve_{};
-    bool ever_resolved_ = false;
 };
