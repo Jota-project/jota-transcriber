@@ -8,6 +8,11 @@ services:
     network_mode: host
     env_file:
       - .env
+    # VAD (Silero) silence gating is always on and has no env-var override —
+    # point it at the model mounted from ./models/. Place
+    # ggml-silero-v5.1.2.bin in ./models/ alongside the main model
+    # (download with: ./third_party/whisper.cpp/models/download-vad-model.sh silero-v5.1.2).
+    command: ["--vad-model", "/app/models/ggml-silero-v5.1.2.bin"]
     volumes:
       - ./models:/app/models
       # Mount SSL certs if needed

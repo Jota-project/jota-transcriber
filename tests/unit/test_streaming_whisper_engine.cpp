@@ -5,6 +5,9 @@
 #include <thread>
 #include <atomic>
 #include <cmath>
+#include <fstream>
+#include <cstdint>
+#include <cfloat>
 
 #ifndef PROJECT_ROOT
 #define PROJECT_ROOT "."
@@ -93,6 +96,9 @@ TEST_F(StreamingWhisperEngineTest, SlidingWindowNoForceDoesNotCommitShortBuffer)
     EXPECT_TRUE(res.committed_text.empty());
 }
 
+// No setVadConfig() call: exercises the passthrough (no-gate) path on silence.
+// Real VAD gating of silence is covered separately by
+// GatedLongSilencePreservesBothUtterances below.
 TEST_F(StreamingWhisperEngineTest, ForceCommitClearsBuffer) {
     StreamingWhisperEngine engine(ctx_);
     engine.setLanguage("es");
@@ -109,6 +115,76 @@ TEST_F(StreamingWhisperEngineTest, TranscribeEmptyBufferReturnsEmpty) {
     auto res = engine.transcribeSlidingWindow(true);
     EXPECT_TRUE(res.committed_text.empty());
     EXPECT_TRUE(res.partial_text.empty());
+}
+
+TEST_F(StreamingWhisperEngineTest, PassthroughWhenVadNotConfigured) {
+    // With no setVadConfig() call, gating is disabled and the engine behaves
+    // exactly as before: a 3 s silence snapshot still decodes (no skip).
+    StreamingWhisperEngine engine(ctx_);
+    engine.processAudioChunk(std::vector<float>(16000 * 3, 0.0f));
+    ASSERT_NO_THROW({
+        auto res = engine.transcribeSlidingWindow(true);
+        (void)res;  // no crash / no early-return path taken
+    });
+    EXPECT_EQ(engine.getBufferSize(), 0u);  // force_commit clears buffer
+}
+
+// Minimal PCM16 mono WAV loader (jfk.wav is 16 kHz mono 16-bit). Finds the
+// "data" chunk and converts int16 -> float32 in [-1, 1].
+static std::vector<float> loadWavMono16k(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return {};
+    std::vector<char> bytes((std::istreambuf_iterator<char>(f)),
+                             std::istreambuf_iterator<char>());
+    // Locate "data" chunk id.
+    size_t i = 12;
+    while (i + 8 <= bytes.size()) {
+        uint32_t sz = static_cast<uint8_t>(bytes[i+4]) |
+                      (static_cast<uint8_t>(bytes[i+5]) << 8) |
+                      (static_cast<uint8_t>(bytes[i+6]) << 16) |
+                      (static_cast<uint8_t>(bytes[i+7]) << 24);
+        if (bytes[i]=='d' && bytes[i+1]=='a' && bytes[i+2]=='t' && bytes[i+3]=='a') {
+            std::vector<float> out;
+            size_t start = i + 8;
+            size_t end = std::min(bytes.size(), start + sz);
+            for (size_t p = start; p + 1 < end; p += 2) {
+                int16_t s = static_cast<uint8_t>(bytes[p]) |
+                            (static_cast<int16_t>(bytes[p+1]) << 8);
+                out.push_back(s / 32768.0f);
+            }
+            return out;
+        }
+        i += 8 + sz + (sz & 1);
+    }
+    return {};
+}
+
+TEST_F(StreamingWhisperEngineTest, GatedLongSilencePreservesBothUtterances) {
+    const std::string vadModel =
+        std::string(PROJECT_ROOT) + "/third_party/whisper.cpp/models/ggml-silero-v5.1.2.bin";
+    const std::string wav =
+        std::string(PROJECT_ROOT) + "/third_party/whisper.cpp/samples/jfk.wav";
+    if (!std::filesystem::exists(vadModel) || !std::filesystem::exists(wav)) {
+        GTEST_SKIP() << "VAD model or jfk.wav not found";
+    }
+    std::vector<float> speech = loadWavMono16k(wav);
+    ASSERT_FALSE(speech.empty());
+
+    StreamingWhisperEngine engine(ctx_);
+    engine.setLanguage("en");
+    engine.setVadConfig(vadModel, 0.5f, 250, 2000, FLT_MAX, 400, 0.1f);
+
+    // utterance | 4 s silence | utterance
+    engine.processAudioChunk(speech);
+    engine.processAudioChunk(std::vector<float>(16000 * 4, 0.0f));
+    engine.processAudioChunk(speech);
+
+    auto res = engine.transcribeSlidingWindow(true);
+    std::string text = res.committed_text;
+    // JFK sample contains "ask not what your country"; expect it present and
+    // no crash / no buffer-translation drift (force_commit clears buffer).
+    EXPECT_NE(text.find("country"), std::string::npos);
+    EXPECT_EQ(engine.getBufferSize(), 0u);
 }
 
 // ─── Configuración ───────────────────────────────────────────────────────────
