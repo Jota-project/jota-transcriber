@@ -111,6 +111,18 @@ TEST_F(StreamingWhisperEngineTest, TranscribeEmptyBufferReturnsEmpty) {
     EXPECT_TRUE(res.partial_text.empty());
 }
 
+TEST_F(StreamingWhisperEngineTest, PassthroughWhenVadNotConfigured) {
+    // With no setVadConfig() call, gating is disabled and the engine behaves
+    // exactly as before: a 3 s silence snapshot still decodes (no skip).
+    StreamingWhisperEngine engine(ctx_);
+    engine.processAudioChunk(std::vector<float>(16000 * 3, 0.0f));
+    ASSERT_NO_THROW({
+        auto res = engine.transcribeSlidingWindow(true);
+        (void)res;  // no crash / no early-return path taken
+    });
+    EXPECT_EQ(engine.getBufferSize(), 0u);  // force_commit clears buffer
+}
+
 // ─── Configuración ───────────────────────────────────────────────────────────
 
 TEST_F(StreamingWhisperEngineTest, SetLanguageDoesNotCrash) {

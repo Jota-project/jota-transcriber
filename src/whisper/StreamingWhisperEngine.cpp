@@ -7,6 +7,7 @@
 #include "InferenceLimiter.h"
 #include "log/Log.h"
 #include "utils/AudioPreprocessor.h"
+#include "whisper/VadGate.h"
 
 StreamingWhisperEngine::StreamingWhisperEngine(whisper_context* shared_ctx)
     : ctx_(shared_ctx),
@@ -89,6 +90,18 @@ StreamingWhisperEngine::TranscribeResult StreamingWhisperEngine::transcribeSlidi
     }
     // buffer_mutex_ is now RELEASED — processAudioChunk() can append concurrently.
 
+    // --- Step 1.5: VAD silence gating (passthrough when not configured) ---
+    VadGate::GatedResult gated;
+    const std::vector<float>* decode_ptr = &snapshot;
+    if (vad_gate_) {
+        gated = vad_gate_->gate(snapshot);
+        if (!gated.had_speech) {
+            return {};  // nothing but silence this pass — skip decode entirely
+        }
+        decode_ptr = &gated.samples;
+    }
+    const std::vector<float>& decode_buf = *decode_ptr;
+
     // --- Step 2: Run inference on snapshot (no lock held) ---
     // Use beam search when beam_size > 1, greedy otherwise
     whisper_full_params params = (beam_size_ > 1)
@@ -124,7 +137,7 @@ StreamingWhisperEngine::TranscribeResult StreamingWhisperEngine::transcribeSlidi
     // For a 5s buffer this saves ~83% of encoder attention work over zero-padded silence.
     {
         int ctx = static_cast<int>(
-            std::ceil(static_cast<float>(snapshot.size()) / 16000.0f * 50.0f));
+            std::ceil(static_cast<float>(decode_buf.size()) / 16000.0f * 50.0f));
         params.audio_ctx = std::max(ctx, 64); // floor at 64 tokens (~1.3s)
     }
 
@@ -138,8 +151,8 @@ StreamingWhisperEngine::TranscribeResult StreamingWhisperEngine::transcribeSlidi
 
     int result = whisper_full_with_state(
         ctx_, state_, params,
-        snapshot.data(),   // use snapshot, not audio_buffer_
-        static_cast<int>(snapshot.size())
+        decode_buf.data(),
+        static_cast<int>(decode_buf.size())
     );
 
     if (result != 0) {
@@ -173,7 +186,7 @@ StreamingWhisperEngine::TranscribeResult StreamingWhisperEngine::transcribeSlidi
         } else {
             // Find the last segment that ends before the final 2 seconds of audio.
             // Whisper timestamps are in 10ms units (100 = 1 sec).
-            int64_t overlap_bounds_t = (static_cast<int64_t>(snapshot.size()) - 32000) / 160;
+            int64_t overlap_bounds_t = (static_cast<int64_t>(decode_buf.size()) - 32000) / 160;
 
             for (int i = n_segments - 1; i >= 0; --i) {
                 int64_t t1 = whisper_full_get_segment_t1_from_state(state_, i);
@@ -209,7 +222,9 @@ StreamingWhisperEngine::TranscribeResult StreamingWhisperEngine::transcribeSlidi
             {
                 std::lock_guard<std::mutex> lock(buffer_mutex_);
                 if (commit_t1 > 0) {
-                    size_t samples_to_erase = commit_t1 * 160;
+                    size_t samples_to_erase = vad_gate_
+                        ? static_cast<size_t>(vad_gate_->toOriginalSamples(commit_t1))
+                        : static_cast<size_t>(commit_t1) * 160;
                     Log::debug("Committing " + std::to_string(samples_to_erase) + " samples: '" + res.committed_text + "'");
                     if (samples_to_erase < audio_buffer_.size()) {
                         audio_buffer_.erase(audio_buffer_.begin(),
@@ -300,6 +315,25 @@ void StreamingWhisperEngine::setNoSpeechThreshold(float no_speech_thold) {
 
 void StreamingWhisperEngine::setLogprobThreshold(float logprob_thold) {
     logprob_thold_ = logprob_thold;
+}
+
+void StreamingWhisperEngine::setVadConfig(const std::string& model_path,
+                                          float threshold,
+                                          int min_speech_ms,
+                                          int min_silence_ms,
+                                          float max_speech_s,
+                                          int speech_pad_ms,
+                                          float samples_overlap) {
+    whisper_vad_params p = whisper_vad_default_params();
+    p.threshold               = threshold;
+    p.min_speech_duration_ms  = min_speech_ms;
+    p.min_silence_duration_ms = min_silence_ms;
+    p.max_speech_duration_s   = max_speech_s;
+    p.speech_pad_ms           = speech_pad_ms;
+    p.samples_overlap         = samples_overlap;
+    vad_gate_ = std::make_unique<VadGate>(model_path, p, n_threads_);
+    Log::info("VAD gating enabled (min_silence_ms=" + std::to_string(min_silence_ms) +
+              ", speech_pad_ms=" + std::to_string(speech_pad_ms) + ")");
 }
 
 bool StreamingWhisperEngine::isReady() const {

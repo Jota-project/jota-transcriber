@@ -7,6 +7,7 @@
 // Forward declarations
 struct whisper_context;
 struct whisper_state;
+class VadGate;
 
 /**
  * @brief Motor de transcripción en streaming usando whisper.cpp
@@ -104,7 +105,19 @@ public:
     void setTemperatureInc(float temperature_inc);
     void setNoSpeechThreshold(float no_speech_thold);
     void setLogprobThreshold(float logprob_thold);
-    
+
+    /**
+     * @brief Enable Silero-VAD silence gating (server-configured, always-on in
+     *        production). No-op path preserved when never called.
+     */
+    void setVadConfig(const std::string& model_path,
+                      float threshold,
+                      int min_speech_ms,
+                      int min_silence_ms,
+                      float max_speech_s,
+                      int speech_pad_ms,
+                      float samples_overlap);
+
     /**
      * @brief Verificar si el engine está listo
      */
@@ -123,6 +136,7 @@ public:
 private:
     whisper_context* ctx_;       // Shared, NOT owned
     whisper_state*   state_;     // Owned, per-session
+    std::unique_ptr<VadGate> vad_gate_;  // null => gating disabled (passthrough)
     std::vector<float> audio_buffer_;
     mutable std::mutex buffer_mutex_;
     
