@@ -17,6 +17,7 @@
 #include "server/ServerConfig.h"
 #include "server/ConnectionLimiter.h"
 #include "server/ConnectionGuard.h"
+#include "server/HandshakeWatchdog.h"
 #include "server/TrustedProxyResolver.h"
 #include "server/AuthManager.h"
 #include "auth/ApiAuthConfig.h"
@@ -146,6 +147,9 @@ ServerConfig configFromEnv() {
     if (auto v = env("SESSION_TIMEOUT_SEC"); !v.empty())
         cfg.session_timeout_sec = std::stoi(v);
 
+    if (auto v = env("HANDSHAKE_TIMEOUT_SEC"); !v.empty())
+        cfg.handshake_timeout_sec = std::stoi(v);
+
     if (auto v = env("WHISPER_TEMPERATURE"); !v.empty())
         cfg.whisper_temperature = std::stof(v);
 
@@ -183,7 +187,7 @@ void printUsage(const char* binary) {
               << " [--trusted-proxy-hosts HOSTS] [--trusted-proxy-refresh-sec N]"
               << " [--whisper-beam-size N] [--whisper-threads N]"
               << " [--max-concurrent-inference N] [--model-cache-ttl N]"
-              << " [--whisper-initial-prompt TEXT] [--session-timeout-sec N] [--shutdown-timeout-sec N]"
+              << " [--whisper-initial-prompt TEXT] [--session-timeout-sec N] [--handshake-timeout-sec N] [--shutdown-timeout-sec N]"
               << " [--flush-min-new-audio-ms N]"
               << " [--vad-model PATH] [--vad-threshold F] [--vad-min-speech-ms N]"
               << " [--vad-min-silence-ms N] [--vad-max-speech-s F] [--vad-speech-pad-ms N]"
@@ -203,7 +207,7 @@ void printUsage(const char* binary) {
     std::cout << "  TLS_CERT, TLS_KEY, MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP," << std::endl;
     std::cout << "  TRUSTED_PROXY_HOSTS, TRUSTED_PROXY_REFRESH_SEC," << std::endl;
     std::cout << "  WHISPER_BEAM_SIZE, WHISPER_THREADS, MAX_CONCURRENT_INFERENCE," << std::endl;
-    std::cout << "  MODEL_CACHE_TTL, WHISPER_INITIAL_PROMPT, SESSION_TIMEOUT_SEC, SHUTDOWN_TIMEOUT_SEC," << std::endl;
+    std::cout << "  MODEL_CACHE_TTL, WHISPER_INITIAL_PROMPT, SESSION_TIMEOUT_SEC, HANDSHAKE_TIMEOUT_SEC, SHUTDOWN_TIMEOUT_SEC," << std::endl;
     std::cout << "  WHISPER_TEMPERATURE, WHISPER_TEMPERATURE_INC," << std::endl;
     std::cout << "  WHISPER_NO_SPEECH_THOLD, WHISPER_LOGPROB_THOLD" << std::endl;
     std::cout << "  FLUSH_MIN_NEW_AUDIO_MS" << std::endl;
@@ -272,6 +276,8 @@ ServerConfig parseArgs(int argc, char* argv[]) {
             config.whisper_initial_prompt = argv[++i];
         } else if (arg == "--session-timeout-sec" && i + 1 < argc) {
             config.session_timeout_sec = std::stoi(argv[++i]);
+        } else if (arg == "--handshake-timeout-sec" && i + 1 < argc) {
+            config.handshake_timeout_sec = std::stoi(argv[++i]);
         } else if (arg == "--shutdown-timeout-sec" && i + 1 < argc) {
             config.shutdown_timeout_sec = std::stoi(argv[++i]);
         } else if (arg == "--whisper-temperature" && i + 1 < argc) {
@@ -355,6 +361,16 @@ void handleSession(tcp::socket socket,
                    std::shared_ptr<ssl::context> ssl_ctx) {
     ConnectionGuard guard(limiter, client_ip);
 
+    // The ConnectionGuard slot above is held from here on. Before the
+    // StreamingSession exists (and takes over via its own idle watchdog,
+    // jota-transcriber#68), the TLS handshake and the initial HTTP upgrade
+    // read below have no timeout at all otherwise: a client that opens a
+    // TCP connection and sends nothing (or trickles data arbitrarily
+    // slowly) would hold this slot forever. native_handle() is captured
+    // before any std::move below — it's the same OS-level fd regardless of
+    // which C++ wrapper currently owns it.
+    HandshakeWatchdog handshake_watchdog(socket.native_handle(), config.handshake_timeout_sec);
+
     try {
         boost::beast::flat_buffer buffer;
         http::request_parser<http::string_body> parser;
@@ -387,6 +403,9 @@ void handleSession(tcp::socket socket,
             }
 
             websocket::stream<ssl::stream<tcp::socket>> ws(std::move(ssl_stream));
+            // From here on, StreamingSession's own idle watchdog (flushLoop)
+            // owns this connection's timeout protection.
+            handshake_watchdog.disarm();
             auto session = std::make_shared<StreamingSession<websocket::stream<ssl::stream<tcp::socket>>>>(
                 std::move(ws), config.model_path, auth_manager,
                 config.whisper_beam_size, config.whisper_threads,
@@ -414,6 +433,9 @@ void handleSession(tcp::socket socket,
             }
 
             websocket::stream<tcp::socket> ws(std::move(socket));
+            // From here on, StreamingSession's own idle watchdog (flushLoop)
+            // owns this connection's timeout protection.
+            handshake_watchdog.disarm();
             auto session = std::make_shared<StreamingSession<websocket::stream<tcp::socket>>>(
                 std::move(ws), config.model_path, auth_manager,
                 config.whisper_beam_size, config.whisper_threads,

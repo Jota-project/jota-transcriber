@@ -14,6 +14,7 @@
 #include <memory>
 #include <atomic>
 #include <cstring>
+#include <future>
 
 namespace beast = boost::beast;
 namespace http = beast::http;
@@ -97,7 +98,7 @@ protected:
         }
     }
 
-    uint16_t startServer(bool require_auth = false) {
+    uint16_t startServer(bool require_auth = false, int session_timeout_sec = 30) {
         tcp::endpoint endpoint(net::ip::make_address("127.0.0.1"), 0);
         acceptor_ = std::make_unique<tcp::acceptor>(ioc_, endpoint);
         uint16_t port = acceptor_->local_endpoint().port();
@@ -109,18 +110,18 @@ protected:
         }
         auto auth_manager = std::make_shared<AuthManager>(auth_cfg);
 
-        doAccept(auth_manager);
+        doAccept(auth_manager, session_timeout_sec);
 
         server_thread_ = std::thread([this]() { ioc_.run(); });
         return port;
     }
 
-    void doAccept(std::shared_ptr<AuthManager> auth_manager) {
+    void doAccept(std::shared_ptr<AuthManager> auth_manager, int session_timeout_sec = 30) {
         acceptor_->async_accept(
-            [this, auth_manager](boost::system::error_code ec, tcp::socket socket) {
+            [this, auth_manager, session_timeout_sec](boost::system::error_code ec, tcp::socket socket) {
                 if (!ec) {
                     session_threads_.emplace_back(
-                        [this, s = std::move(socket), auth_manager]() mutable {
+                        [this, s = std::move(socket), auth_manager, session_timeout_sec]() mutable {
                             try {
                                 boost::beast::flat_buffer buffer;
                                 boost::beast::http::request<boost::beast::http::string_body> req;
@@ -133,18 +134,27 @@ protected:
                                     std::move(ws),
                                     model_path,
                                     auth_manager,
-                                    5, 4, "", 30, 0.2f, 0.2f, 0.3f, -1.0f
+                                    5, 4, "", session_timeout_sec, 0.2f, 0.2f, 0.3f, -1.0f
                                 );
                                 session->run(req);
                             } catch (...) {}
                         });
-                    doAccept(auth_manager);
+                    doAccept(auth_manager, session_timeout_sec);
                 }
             });
     }
 
     WsTestClient connect(uint16_t port) {
         return WsTestClient(client_ioc_, port);
+    }
+
+    // WsTestClient is neither copyable nor movable (its destructor's
+    // is_open()/close() aren't safe to run against a moved-from Beast
+    // stream). Construct it in place inside the shared_ptr — no
+    // intermediate moved-from object is ever created — for tests that
+    // need to hand the client to a background thread.
+    std::shared_ptr<WsTestClient> connectShared(uint16_t port) {
+        return std::make_shared<WsTestClient>(client_ioc_, port);
     }
 
 private:
@@ -348,6 +358,49 @@ TEST_F(StreamingSessionTest, DoubleConfig) {
     auto msg2 = client.recvJson();
     EXPECT_EQ(msg2["type"], "ready");
     EXPECT_EQ(msg2["config"]["language"], "en");
+}
+
+// jota-transcriber#68: a client that goes idle without ever sending a WS
+// close frame (network partition, crash, or simply abandoning the
+// connection — not necessarily a client bug) must not hang the session's
+// ws_.read() forever, since that leaks its ConnectionLimiter slot
+// indefinitely. Before the fix, SO_RCVTIMEO alone does not reliably
+// interrupt a synchronous Boost.Asio/Beast read, so this reproduces the
+// incident directly: configure a short session_timeout_sec, complete the
+// handshake, then go silent — the server must force-close the socket
+// within session_timeout_sec + a small margin.
+TEST_F(StreamingSessionTest, IdleSessionForceClosedWithinTimeout) {
+    auto port = startServer(false, /*session_timeout_sec=*/1);
+    auto client = connectShared(port);
+
+    client->sendJson({{"type", "config"}, {"language", "es"}});
+    auto ready = client->recvJson();
+    ASSERT_EQ(ready["type"], "ready");
+
+    // From here on the client goes idle and never closes cleanly. The
+    // read below blocks until the server does *something* — either a
+    // graceful close (not expected here) or the underlying socket being
+    // shut down out from under it, which surfaces as an error/EOF.
+    // Captured by shared_ptr and detached: if the fix is broken this
+    // thread blocks forever, but it must not dangle a reference into a
+    // destroyed test fixture or hang the test function itself.
+    auto done = std::make_shared<std::promise<void>>();
+    auto done_future = done->get_future();
+    std::thread([client, done]() {
+        try {
+            client->recvJson();
+        } catch (...) {
+            // Any error/EOF counts: we're proving the client's read
+            // unblocked, not asserting which specific error Beast
+            // surfaces for a peer that vanished without a close frame.
+        }
+        done->set_value();
+    }).detach();
+
+    auto status = done_future.wait_for(std::chrono::seconds(5));
+    EXPECT_EQ(std::future_status::ready, status)
+        << "server never force-closed the idle session — the ConnectionLimiter "
+           "slot would leak forever, exactly as in the jota-transcriber#68 incident";
 }
 
 TEST(MsToSamples16kHzTest, ConvertsMillisecondsToSampleCount) {
