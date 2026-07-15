@@ -53,6 +53,9 @@ cmake --build build -j$(nproc)
 # Example: small model (~500 MB, good balance of speed and accuracy)
 cd third_party/whisper.cpp/models
 ./download-ggml-model.sh small
+
+# Silero VAD model (required — silence gating is always on)
+./download-vad-model.sh silero-v5.1.2
 ```
 
 ### Run
@@ -104,7 +107,7 @@ docker-compose build --build-arg GGML_CUDA=0
 docker-compose up
 ```
 
-Model files must be placed in `./models/` before starting (mounted at `/app/models/` inside the container).
+Model files must be placed in `./models/` before starting (mounted at `/app/models/` inside the container). This must include the Silero VAD model (`ggml-silero-v5.1.2.bin`) alongside the main Whisper model — silence gating is always on and has no environment-variable override, so `docker-compose.yml` passes `--vad-model /app/models/ggml-silero-v5.1.2.bin` explicitly.
 
 ## CLI Reference
 
@@ -129,8 +132,15 @@ Model files must be placed in `./models/` before starting (mounted at `/app/mode
 | `--max-concurrent-inference N` | `4` | Max simultaneous Whisper decodes |
 | `--model-cache-ttl N` | `300` | Seconds to keep model loaded after last session (-1 = forever) |
 | `--whisper-initial-prompt TEXT` | — | Decoder initial prompt for vocabulary guidance |
+| `--vad-model PATH` | `third_party/whisper.cpp/models/ggml-silero-v5.1.2.bin` | Silero VAD model file — silence gating is always on |
+| `--vad-threshold F` | `0.5` | VAD speech probability threshold |
+| `--vad-min-speech-ms N` | `250` | Minimum speech segment duration |
+| `--vad-min-silence-ms N` | `2000` | Silence ≥ this duration is trimmed before Whisper decoding |
+| `--vad-max-speech-s F` | unlimited | Max speech segment duration before a forced split |
+| `--vad-speech-pad-ms N` | `400` | Audio kept on each side of a detected speech segment |
+| `--vad-samples-overlap F` | `0.1` | Overlap (seconds) between adjacent speech segments |
 
-All flags are also available as environment variables (see `.env.example`).
+All flags are also available as environment variables (see `.env.example`), **except the `--vad-*` flags**, which are CLI-only — pass them via `command:` in `docker-compose.yml` if not using the defaults.
 
 ## WebSocket Protocol
 
