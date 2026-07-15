@@ -2,6 +2,43 @@
 
 #include "whisper/VadGate.h"
 
+#include <filesystem>
+#include <whisper.h>
+
+#ifndef PROJECT_ROOT
+#define PROJECT_ROOT "."
+#endif
+
+static const std::string VAD_MODEL_PATH =
+    std::string(PROJECT_ROOT) + "/third_party/whisper.cpp/models/ggml-silero-v5.1.2.bin";
+
+static VadGate makeGate() {
+    whisper_vad_params p = whisper_vad_default_params();
+    p.threshold               = 0.5f;
+    p.min_speech_duration_ms  = 250;
+    p.min_silence_duration_ms = 2000;
+    p.speech_pad_ms           = 400;
+    return VadGate(VAD_MODEL_PATH, p, 4);
+}
+
+TEST(VadGateBehavior, EmptyInputHasNoSpeech) {
+    VadGate gate = makeGate();
+    auto result = gate.gate({});
+    EXPECT_FALSE(result.had_speech);
+    EXPECT_TRUE(result.samples.empty());
+}
+
+TEST(VadGateBehavior, PureSilenceHasNoSpeech) {
+    if (!std::filesystem::exists(VAD_MODEL_PATH)) {
+        GTEST_SKIP() << "VAD model not found: " << VAD_MODEL_PATH;
+    }
+    VadGate gate = makeGate();
+    std::vector<float> silence(16000 * 4, 0.0f);  // 4 s of zeros
+    auto result = gate.gate(silence);
+    EXPECT_FALSE(result.had_speech);
+    EXPECT_TRUE(result.samples.empty());
+}
+
 // Mapping fixture: two speech segments in the ORIGINAL timeline:
 //   seg A: original [0, 16000)      -> gated [0, 16000)
 //   (100 ms = 1600 samples synthetic silence gap in gated timeline)
