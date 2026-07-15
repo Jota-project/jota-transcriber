@@ -17,6 +17,7 @@
 #include "server/ServerConfig.h"
 #include "server/ConnectionLimiter.h"
 #include "server/ConnectionGuard.h"
+#include "server/TrustedProxyResolver.h"
 #include "server/AuthManager.h"
 #include "auth/ApiAuthConfig.h"
 #include "whisper/ModelCache.h"
@@ -119,6 +120,12 @@ ServerConfig configFromEnv() {
 
     if (auto v = env("MAX_CONNECTIONS_PER_IP"); !v.empty())
         cfg.max_connections_per_ip = static_cast<size_t>(std::stoul(v));
+
+    if (auto v = env("TRUSTED_PROXY_HOSTS"); !v.empty())
+        cfg.trusted_proxy_hosts = v;
+
+    if (auto v = env("TRUSTED_PROXY_REFRESH_SEC"); !v.empty())
+        cfg.trusted_proxy_refresh_sec = std::stoi(v);
 
     // Whisper quality params
     if (auto v = env("WHISPER_BEAM_SIZE"); !v.empty())
@@ -237,6 +244,10 @@ ServerConfig parseArgs(int argc, char* argv[]) {
             config.max_connections = static_cast<size_t>(std::stoul(argv[++i]));
         } else if (arg == "--max-connections-per-ip" && i + 1 < argc) {
             config.max_connections_per_ip = static_cast<size_t>(std::stoul(argv[++i]));
+        } else if (arg == "--trusted-proxy-hosts" && i + 1 < argc) {
+            config.trusted_proxy_hosts = argv[++i];
+        } else if (arg == "--trusted-proxy-refresh-sec" && i + 1 < argc) {
+            config.trusted_proxy_refresh_sec = std::stoi(argv[++i]);
         } else if (arg == "--whisper-beam-size" && i + 1 < argc) {
             config.whisper_beam_size = std::stoi(argv[++i]);
         } else if (arg == "--whisper-threads" && i + 1 < argc) {
@@ -452,6 +463,14 @@ int main(int argc, char* argv[]) {
             config.max_connections_per_ip
         );
 
+        auto trusted_resolver = std::make_shared<TrustedProxyResolver>(
+            config.trusted_proxy_hosts,
+            config.trusted_proxy_refresh_sec
+        );
+        if (trusted_resolver->enabled()) {
+            Log::info("Trusted proxies (per-IP limit exempt): " + config.trusted_proxy_hosts);
+        }
+
         ApiAuthConfig auth_config;
         auth_config.static_token      = config.auth_token;
         auth_config.api_base_url      = config.auth_api_url;
@@ -493,14 +512,16 @@ int main(int argc, char* argv[]) {
             }
 
             std::string client_ip = socket.remote_endpoint().address().to_string();
+            bool trusted = trusted_resolver->isTrusted(client_ip);
 
-            if (!limiter->tryAcquire(client_ip)) {
+            if (!limiter->tryAcquire(client_ip, trusted)) {
                 Log::warn("Connection rejected (limit reached): " + client_ip);
                 socket.close();
                 continue;
             }
 
-            Log::info("New connection from " + client_ip);
+            Log::info("New connection from " + client_ip +
+                      (trusted ? " (trusted proxy)" : ""));
 
             try {
                 session_threads.emplace_back(handleSession,

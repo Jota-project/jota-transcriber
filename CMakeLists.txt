@@ -44,6 +44,7 @@ if(BUILD_SERVER)
         src/server/StreamingSession.cpp
         src/server/AuthManager.cpp
         src/server/ConnectionLimiter.cpp
+        src/server/TrustedProxyResolver.cpp
         src/server/ConnectionGuard.cpp
         src/auth/ApiAuthClient.cpp
         src/auth/AuthCache.cpp
