@@ -15,6 +15,12 @@
 // Fail-closed: if a hostname never resolves, nobody is trusted. On a later
 // resolution failure the last known-good IP set is kept.
 //
+// Dual-stack caveat: if the server binds to "::", Boost.Asio reports IPv4
+// peers as "::ffff:a.b.c.d", but defaultResolver() returns bare IPv4
+// strings (e.g. "a.b.c.d") from AF_INET records. An IPv4 trusted-proxy
+// hostname then won't match and silently fails closed (not a security
+// hole, but worth knowing when troubleshooting).
+//
 // isTrusted() is called only from the single-threaded accept loop; the mutex
 // is defensive and also lets tests drive it safely.
 class TrustedProxyResolver {

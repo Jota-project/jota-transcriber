@@ -55,7 +55,7 @@ bool TrustedProxyResolver::isTrusted(const std::string& ip) {
         }
         last_resolve_ = now;  // bound retry cost to once per refresh window
     }
-    for (const auto& [host, ips] : per_host_ips_) {
+    for (const auto& [_, ips] : per_host_ips_) {
         if (ips.count(ip) > 0) return true;
     }
     return false;

@@ -180,6 +180,7 @@ void printUsage(const char* binary) {
               << " [--auth-cache-ttl N] [--auth-api-timeout N]"
               << " [--cert cert.pem] [--key key.pem]"
               << " [--max-connections N] [--max-connections-per-ip N]"
+              << " [--trusted-proxy-hosts HOSTS] [--trusted-proxy-refresh-sec N]"
               << " [--whisper-beam-size N] [--whisper-threads N]"
               << " [--max-concurrent-inference N] [--model-cache-ttl N]"
               << " [--whisper-initial-prompt TEXT] [--session-timeout-sec N] [--shutdown-timeout-sec N]"
@@ -190,6 +191,7 @@ void printUsage(const char* binary) {
     std::cout << "  MODEL_PATH, BIND_ADDRESS, PORT," << std::endl;
     std::cout << "  AUTH_TOKEN, AUTH_API_URL, AUTH_API_SECRET, AUTH_CACHE_TTL, AUTH_API_TIMEOUT," << std::endl;
     std::cout << "  TLS_CERT, TLS_KEY, MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP," << std::endl;
+    std::cout << "  TRUSTED_PROXY_HOSTS, TRUSTED_PROXY_REFRESH_SEC," << std::endl;
     std::cout << "  WHISPER_BEAM_SIZE, WHISPER_THREADS, MAX_CONCURRENT_INFERENCE," << std::endl;
     std::cout << "  MODEL_CACHE_TTL, WHISPER_INITIAL_PROMPT, SESSION_TIMEOUT_SEC, SHUTDOWN_TIMEOUT_SEC," << std::endl;
     std::cout << "  WHISPER_TEMPERATURE, WHISPER_TEMPERATURE_INC," << std::endl;
