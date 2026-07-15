@@ -5,6 +5,7 @@ add_executable(unit_tests
     unit/test_audio_pipeline.cpp
     unit/test_inference_limiter.cpp
     unit/test_connection_limiter.cpp
+    unit/test_trusted_proxy_resolver.cpp
     unit/test_session_tracker.cpp
     unit/test_model_cache.cpp
     unit/test_streaming_whisper_engine.cpp
@@ -16,6 +17,7 @@ add_executable(unit_tests
     # Fuentes del servidor que no tienen dependencias de Boost/OpenSSL
     ${CMAKE_SOURCE_DIR}/src/audio/AudioDecoder.cpp
     ${CMAKE_SOURCE_DIR}/src/server/ConnectionLimiter.cpp
+    ${CMAKE_SOURCE_DIR}/src/server/TrustedProxyResolver.cpp
     ${CMAKE_SOURCE_DIR}/src/server/ConnectionGuard.cpp
     ${CMAKE_SOURCE_DIR}/src/server/AuthManager.cpp
     ${CMAKE_SOURCE_DIR}/src/server/MultipartParser.cpp
