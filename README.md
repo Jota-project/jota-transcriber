@@ -163,7 +163,6 @@ All flags are also available as environment variables (see `.env.example`).
 - **docker-compose / same host** — this repo's `docker-compose.yml` uses `network_mode: host`, so the gateway and transcriber share the host's network namespace; `--trusted-proxy-hosts localhost` (or the host's own hostname) is usually correct.
 - **Kubernetes** — point at the gateway's Service DNS name, e.g. `--trusted-proxy-hosts jota-gateway.default.svc.cluster.local`. CoreDNS resolves it to the current pod IP(s) on each refresh, so pod restarts/rescheduling don't require a config change.
 - **Dual-stack caveat** — on a dual-stack bind (`--bind ::`), Boost.Asio reports IPv4 peers as `::ffff:a.b.c.d`, but DNS resolution returns bare IPv4 addresses, so an IPv4 trusted host won't match in that setup. This fails closed (not a security issue), but is a silent no-op worth knowing about when troubleshooting.
-- **DNS-outage caveat** — resolution runs synchronously in the accept loop; a stalled DNS lookup can delay accepting *any* new connection (trusted or not) for up to the lookup's own timeout, once per refresh window. Tracked as a possible fast-follow in [#73](https://github.com/Jota-project/jota-transcriber/issues/73).
 
 ## WebSocket Protocol
 
@@ -274,7 +273,7 @@ Always build with `-DBUILD_SHARED_LIBS=OFF`. whisper.cpp defaults to shared libs
 | `test_audio_pipeline.cpp` | 8 | No |
 | `test_inference_limiter.cpp` | 14 | No |
 | `test_connection_limiter.cpp` | 10 | No |
-| `test_trusted_proxy_resolver.cpp` | 11 | No |
+| `test_trusted_proxy_resolver.cpp` | 12 | No |
 | `test_session_tracker.cpp` | 4 | No |
 | `test_model_cache.cpp` | 10 | Yes |
 | `test_streaming_whisper_engine.cpp` | 25 | Yes |

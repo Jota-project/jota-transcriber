@@ -465,12 +465,30 @@ int main(int argc, char* argv[]) {
             config.max_connections_per_ip
         );
 
-        auto trusted_resolver = std::make_shared<TrustedProxyResolver>(
-            config.trusted_proxy_hosts,
-            config.trusted_proxy_refresh_sec
-        );
+        auto trusted_resolver = std::make_shared<TrustedProxyResolver>(config.trusted_proxy_hosts);
+
+        // Refreshing trusted-proxy DNS runs on its own thread so a stalled
+        // lookup (DNS outage) can never delay the accept loop below.
+        // isTrusted() only ever reads the cache TrustedProxyResolver::refresh()
+        // last wrote; see TrustedProxyResolver.h for the concurrency contract.
+        std::atomic<bool> stop_trusted_refresh{false};
+        std::thread trusted_refresh_thread;
         if (trusted_resolver->enabled()) {
             Log::info("Trusted proxies (per-IP limit exempt): " + config.trusted_proxy_hosts);
+            trusted_refresh_thread = std::thread(
+                [trusted_resolver, &stop_trusted_refresh,
+                 refresh_sec = config.trusted_proxy_refresh_sec]() {
+                    trusted_resolver->refresh();  // resolve once immediately at startup
+                    while (!stop_trusted_refresh) {
+                        auto deadline = std::chrono::steady_clock::now() +
+                                        std::chrono::seconds(refresh_sec);
+                        while (!stop_trusted_refresh &&
+                               std::chrono::steady_clock::now() < deadline) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                        }
+                        if (!stop_trusted_refresh) trusted_resolver->refresh();
+                    }
+                });
         }
 
         ApiAuthConfig auth_config;
@@ -497,6 +515,7 @@ int main(int argc, char* argv[]) {
             Log::info("Signal " + std::to_string(signum) + " received — stopping accept loop");
             acceptor.close();
             SessionTracker::instance().shutdownAll();
+            stop_trusted_refresh = true;
         });
 
         while (acceptor.is_open()) {
@@ -564,6 +583,8 @@ int main(int argc, char* argv[]) {
         for (auto& t : session_threads) {
             if (t.joinable()) t.join();
         }
+
+        if (trusted_refresh_thread.joinable()) trusted_refresh_thread.join();
 
         ioc.stop();
         if (ioc_thread.joinable()) ioc_thread.join();
