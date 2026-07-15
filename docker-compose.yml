@@ -15,6 +15,7 @@ services:
     # kept explicit here (rather than relying on binary defaults) so a future
     # default change in code can't silently alter production behavior.
     command: [
+      "./jota-transcriber",
       "--vad-model", "/app/models/ggml-silero-v5.1.2.bin",
       "--vad-threshold", "0.5",
       "--vad-min-speech-ms", "250",
