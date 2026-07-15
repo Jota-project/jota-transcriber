@@ -1,3 +1,10 @@
+## [1.3.2](https://github.com/Jota-project/jota-transcriber/compare/v1.3.1...v1.3.2) (2026-07-15)
+
+
+### Bug Fixes
+
+* silenciar warnings deprecated de libavcodec en path legacy de AudioDecoder ([#78](https://github.com/Jota-project/jota-transcriber/issues/78)) ([3b20971](https://github.com/Jota-project/jota-transcriber/commit/3b20971782ec9249c82c7590f06301142c95ae90)), closes [#pragma](https://github.com/Jota-project/jota-transcriber/issues/pragma) [#pragma](https://github.com/Jota-project/jota-transcriber/issues/pragma) [#pragma](https://github.com/Jota-project/jota-transcriber/issues/pragma) [#pragma](https://github.com/Jota-project/jota-transcriber/issues/pragma) [#pragma](https://github.com/Jota-project/jota-transcriber/issues/pragma) [#pragma](https://github.com/Jota-project/jota-transcriber/issues/pragma)
+
 ## [1.3.1](https://github.com/Jota-project/jota-transcriber/compare/v1.3.0...v1.3.1) (2026-07-15)
 
 
