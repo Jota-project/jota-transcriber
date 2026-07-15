@@ -1,5 +1,4 @@
 build/
 .git/
 models/
-mosquitto/
 *.bin

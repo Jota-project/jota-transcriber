@@ -57,10 +57,12 @@ COPY CMakeLists.txt .
 # que la configuración pase sin necesitar src/ todavía (se sobreescriben luego).
 RUN mkdir -p src/whisper src/server src/server/handlers src/auth src/audio && \
     touch src/whisper/StreamingWhisperEngine.cpp \
+          src/whisper/VadGate.cpp \
           src/server.cpp \
           src/server/StreamingSession.cpp \
           src/server/AuthManager.cpp \
           src/server/ConnectionLimiter.cpp \
+          src/server/TrustedProxyResolver.cpp \
           src/server/ConnectionGuard.cpp \
           src/auth/ApiAuthClient.cpp \
           src/auth/AuthCache.cpp \
