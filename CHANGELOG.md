@@ -1,3 +1,10 @@
+## [1.3.3](https://github.com/Jota-project/jota-transcriber/compare/v1.3.2...v1.3.3) (2026-07-15)
+
+
+### Bug Fixes
+
+* Docker build stub list drift + deploy config/docs audit ([#79](https://github.com/Jota-project/jota-transcriber/issues/79)) ([07e985d](https://github.com/Jota-project/jota-transcriber/commit/07e985daba0c8dca78e2a67e87587eaf6e33181f))
+
 ## [1.3.2](https://github.com/Jota-project/jota-transcriber/compare/v1.3.1...v1.3.2) (2026-07-15)
 
 
