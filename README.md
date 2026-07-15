@@ -91,7 +91,7 @@ cd third_party/whisper.cpp/models
 ./generate_certs.sh
 ```
 
-> **Note on auth:** `AUTH_API_URL` was originally designed to point to `jota-db`. The recommended path forward is per-service `AUTH_TOKEN` (static), with `AUTH_API_URL` kept only for setups that still centralize auth via `jota-db`. The deprecation of `jota-db` as default auth backend is tracked in [`Jota-project/jota-gateway` issues](https://github.com/Jota-project/jota-gateway/issues).
+> **Note on auth:** `AUTH_API_URL` was originally designed to point to `jota-db`. The recommended path forward is per-service `AUTH_TOKEN` (static), with `AUTH_API_URL` kept only for setups that still centralize auth via `jota-db`. The deprecation of `jota-db` as default auth backend is tracked in [`Jota-project/jota-gateway` issues](https://github.com/Jota-project/jota-gateway/issues). Leaving **both** `AUTH_TOKEN` and `AUTH_API_URL` empty disables authentication entirely — every token is accepted. Only rely on this when network placement already restricts who can reach the port (e.g. `network_mode: host` with no public bind, or a firewalled internal network).
 
 ### Run tests
 
@@ -105,12 +105,9 @@ Tests that require a model file skip automatically if `third_party/whisper.cpp/m
 ## Docker
 
 ```bash
-# Build and start with GPU
+# Build and start (requires an NVIDIA GPU — this Dockerfile always builds
+# with CUDA baked in, there is no CPU-only build target)
 docker-compose up --build
-
-# CPU only
-docker-compose build --build-arg GGML_CUDA=0
-docker-compose up
 ```
 
 Model files must be placed in `./models/` before starting (mounted at `/app/models/` inside the container). This must include the Silero VAD model (`ggml-silero-v5.1.2.bin`) alongside the main Whisper model — silence gating is always on and has no environment-variable override, so `docker-compose.yml` passes `--vad-model /app/models/ggml-silero-v5.1.2.bin` explicitly.
@@ -140,6 +137,12 @@ Model files must be placed in `./models/` before starting (mounted at `/app/mode
 | `--max-concurrent-inference N` | `4` | Max simultaneous Whisper decodes |
 | `--model-cache-ttl N` | `300` | Seconds to keep model loaded after last session (-1 = forever) |
 | `--whisper-initial-prompt TEXT` | — | Decoder initial prompt for vocabulary guidance |
+| `--whisper-temperature F` | `0.0` | Initial sampling temperature (`0.0` = greedy, fastest for streaming) |
+| `--whisper-temperature-inc F` | `0.0` | Temperature increment on repetition fallback (`0.0` disables fallback) |
+| `--whisper-no-speech-thold F` | `0.3` | Probability threshold to reject non-speech segments |
+| `--whisper-logprob-thold F` | `-0.7` | Log-prob threshold to reject low-confidence segments (`-1.0` disables) |
+| `--flush-min-new-audio-ms N` | `500` | ms of new audio required before `flushLoop` re-runs inference |
+| `--max-upload-bytes N` | `26214400` (25 MB) | Max body size for `POST /v1/audio/transcriptions` |
 | `--vad-model PATH` | `third_party/whisper.cpp/models/ggml-silero-v5.1.2.bin` | Silero VAD model file — silence gating is always on |
 | `--vad-threshold F` | `0.5` | VAD speech probability threshold |
 | `--vad-min-speech-ms N` | `250` | Minimum speech segment duration |

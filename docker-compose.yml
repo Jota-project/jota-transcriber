@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   server:
     build: .
@@ -12,7 +10,18 @@ services:
     # point it at the model mounted from ./models/. Place
     # ggml-silero-v5.1.2.bin in ./models/ alongside the main model
     # (download with: ./third_party/whisper.cpp/models/download-vad-model.sh silero-v5.1.2).
-    command: ["--vad-model", "/app/models/ggml-silero-v5.1.2.bin"]
+    # Values below match the design decision in
+    # docs/superpowers/specs/2026-07-15-transcriber-vad-gating-design.md —
+    # kept explicit here (rather than relying on binary defaults) so a future
+    # default change in code can't silently alter production behavior.
+    command: [
+      "--vad-model", "/app/models/ggml-silero-v5.1.2.bin",
+      "--vad-threshold", "0.5",
+      "--vad-min-speech-ms", "250",
+      "--vad-min-silence-ms", "2000",
+      "--vad-speech-pad-ms", "400",
+      "--vad-samples-overlap", "0.1"
+    ]
     volumes:
       - ./models:/app/models
       # Mount SSL certs if needed
