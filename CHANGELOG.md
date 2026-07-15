@@ -1,3 +1,39 @@
+## [1.3.1](https://github.com/Jota-project/jota-transcriber/compare/v1.3.0...v1.3.1) (2026-07-15)
+
+
+### Bug Fixes
+
+* sessions colgadas y límite por IP ([#68](https://github.com/Jota-project/jota-transcriber/issues/68) [#69](https://github.com/Jota-project/jota-transcriber/issues/69)) ([#70](https://github.com/Jota-project/jota-transcriber/issues/70)) ([62f2352](https://github.com/Jota-project/jota-transcriber/commit/62f23525a570f43916bb9441923a8e8cfd62ce02))
+
+# [1.3.0](https://github.com/Jota-project/jota-transcriber/compare/v1.2.0...v1.3.0) (2026-07-15)
+
+
+### Features
+
+* **vad:** silence gating real con Silero VAD (whisper.cpp) — Hilo C de [#64](https://github.com/Jota-project/jota-transcriber/issues/64) ([#71](https://github.com/Jota-project/jota-transcriber/issues/71)) ([27e392e](https://github.com/Jota-project/jota-transcriber/commit/27e392e01bde0a8e3c3c4d58069f39c12f8f797d))
+
+# [1.2.0](https://github.com/Jota-project/jota-transcriber/compare/v1.1.7...v1.2.0) (2026-07-09)
+
+
+### Bug Fixes
+
+* bound handleEnd() final decode wait and surface capacity fallback to client ([fe43a83](https://github.com/Jota-project/jota-transcriber/commit/fe43a8329a3519537029ba2d0375d0fda37a8102))
+
+
+### Features
+
+* add bounded-wait try_acquire_for to InferenceLimiter ([a80da50](https://github.com/Jota-project/jota-transcriber/commit/a80da50299ddb683b900330b18cfb8e2ce9e8f27))
+* emit per-session type:status on GPU saturation transitions ([3d699cd](https://github.com/Jota-project/jota-transcriber/commit/3d699cd10d40511bb77b548f0d8f4ff983bf21ea))
+* make flushLoop re-inference cadence configurable (flush_min_new_audio_ms) ([2a01cf8](https://github.com/Jota-project/jota-transcriber/commit/2a01cf8386762009f67948c768ef6b0e489ba3b6))
+
+## [1.1.7](https://github.com/Jota-project/jota-transcriber/compare/v1.1.6...v1.1.7) (2026-07-09)
+
+
+### Bug Fixes
+
+* downgrade CUDA 12.8 → 12.2 for GTX 1060 (Pascal) GPU compatibility ([#63](https://github.com/Jota-project/jota-transcriber/issues/63)) ([d0b63bd](https://github.com/Jota-project/jota-transcriber/commit/d0b63bd53a7d33b6c1e4a2cb26315eb6621a617e))
+* downgrade CUDA toolkit from 12.8 to 12.2 for Pascal GPU compatibility ([339b4ce](https://github.com/Jota-project/jota-transcriber/commit/339b4ce479b3a24248af73fd8374765aa2c74a55))
+
 ## [1.1.6](https://github.com/Jota-project/jota-transcriber/compare/v1.1.5...v1.1.6) (2026-05-12)
 
 

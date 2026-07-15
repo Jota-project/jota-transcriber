@@ -31,11 +31,14 @@ cmake --build build -j$(nproc)
 ./build/tests/test_streaming_whisper --gtest_filter=StreamingWhisperTest.TranscribeSilence
 ```
 
-Tests require a model file at `third_party/whisper.cpp/models/ggml-base.bin`.
+Tests require a model file at `third_party/whisper.cpp/models/ggml-base.bin`. VAD-gated tests (`test_vad_gate.cpp`, and `StreamingWhisperEngineTest.GatedLongSilencePreservesBothUtterances`) additionally require the Silero VAD model at `third_party/whisper.cpp/models/ggml-silero-v5.1.2.bin` — they `GTEST_SKIP()` when it's absent.
 
 ## Running the Server
 
 ```bash
+# Download the Silero VAD model (required — silence gating is always on)
+./third_party/whisper.cpp/models/download-vad-model.sh silero-v5.1.2
+
 # Run Server:
 ./build/jota-transcriber --model /path/to/ggml-base.bin
 # Or with params:
@@ -45,8 +48,13 @@ Tests require a model file at `third_party/whisper.cpp/models/ggml-base.bin`.
     --whisper-beam-size 5 --whisper-threads 4 \
     --auth-token YOUR_TOKEN \
     --cert server.crt --key server.key \
-    --max-connections 8 --max-connections-per-ip 2
+    --max-connections 8 --max-connections-per-ip 2 \
+    --vad-model third_party/whisper.cpp/models/ggml-silero-v5.1.2.bin
 ```
+
+### VAD silence gating (Silero, always on)
+
+Runs whisper.cpp's public Silero VAD API (`whisper_vad_*`) in front of Whisper decoding, trimming silences ≥ `--vad-min-silence-ms` before inference. Implemented in `src/whisper/VadGate.h`/`.cpp`, wired through `StreamingWhisperEngine::setVadConfig()`. No env-var override — configure via CLI flags only (see `--vad-*` in `--help`) or `docker-compose.yml`'s `command:`. This is distinct from the older `vad_thold` client config / `--whisper-no-speech-thold`, which only tune Whisper's internal no-speech heuristic and are not real silence detection.
 
 # Generate self-signed certs
 ./generate_certs.sh
@@ -61,7 +69,7 @@ docker-compose up --build
 docker-compose build
 ```
 
-Model files must be placed in `./models/` before starting (mounted to `/app/models/` in container). Default model: `ggml-base.bin`.
+Model files must be placed in `./models/` before starting (mounted to `/app/models/` in container). Default model: `ggml-base.bin`. Also place the Silero VAD model (`ggml-silero-v5.1.2.bin`) in `./models/` — `docker-compose.yml` passes `--vad-model /app/models/ggml-silero-v5.1.2.bin` explicitly since VAD flags have no env-var override.
 
 ## Architecture
 

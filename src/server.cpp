@@ -17,6 +17,8 @@
 #include "server/ServerConfig.h"
 #include "server/ConnectionLimiter.h"
 #include "server/ConnectionGuard.h"
+#include "server/HandshakeWatchdog.h"
+#include "server/TrustedProxyResolver.h"
 #include "server/AuthManager.h"
 #include "auth/ApiAuthConfig.h"
 #include "whisper/ModelCache.h"
@@ -120,6 +122,12 @@ ServerConfig configFromEnv() {
     if (auto v = env("MAX_CONNECTIONS_PER_IP"); !v.empty())
         cfg.max_connections_per_ip = static_cast<size_t>(std::stoul(v));
 
+    if (auto v = env("TRUSTED_PROXY_HOSTS"); !v.empty())
+        cfg.trusted_proxy_hosts = v;
+
+    if (auto v = env("TRUSTED_PROXY_REFRESH_SEC"); !v.empty())
+        cfg.trusted_proxy_refresh_sec = std::stoi(v);
+
     // Whisper quality params
     if (auto v = env("WHISPER_BEAM_SIZE"); !v.empty())
         cfg.whisper_beam_size = std::stoi(v);
@@ -139,6 +147,9 @@ ServerConfig configFromEnv() {
     if (auto v = env("SESSION_TIMEOUT_SEC"); !v.empty())
         cfg.session_timeout_sec = std::stoi(v);
 
+    if (auto v = env("HANDSHAKE_TIMEOUT_SEC"); !v.empty())
+        cfg.handshake_timeout_sec = std::stoi(v);
+
     if (auto v = env("WHISPER_TEMPERATURE"); !v.empty())
         cfg.whisper_temperature = std::stof(v);
 
@@ -150,6 +161,9 @@ ServerConfig configFromEnv() {
 
     if (auto v = env("WHISPER_LOGPROB_THOLD"); !v.empty())
         cfg.whisper_logprob_thold = std::stof(v);
+
+    if (auto v = env("FLUSH_MIN_NEW_AUDIO_MS"); !v.empty())
+        cfg.flush_min_new_audio_ms = std::stoi(v);
 
     if (auto v = env("SHUTDOWN_TIMEOUT_SEC"); !v.empty())
         cfg.shutdown_timeout_sec = std::stoi(v);
@@ -170,19 +184,33 @@ void printUsage(const char* binary) {
               << " [--auth-cache-ttl N] [--auth-api-timeout N]"
               << " [--cert cert.pem] [--key key.pem]"
               << " [--max-connections N] [--max-connections-per-ip N]"
+              << " [--trusted-proxy-hosts HOSTS] [--trusted-proxy-refresh-sec N]"
               << " [--whisper-beam-size N] [--whisper-threads N]"
               << " [--max-concurrent-inference N] [--model-cache-ttl N]"
-              << " [--whisper-initial-prompt TEXT] [--session-timeout-sec N] [--shutdown-timeout-sec N]"
-              << " [--env-file path]" 
+              << " [--whisper-initial-prompt TEXT] [--session-timeout-sec N] [--handshake-timeout-sec N] [--shutdown-timeout-sec N]"
+              << " [--flush-min-new-audio-ms N]"
+              << " [--vad-model PATH] [--vad-threshold F] [--vad-min-speech-ms N]"
+              << " [--vad-min-silence-ms N] [--vad-max-speech-s F] [--vad-speech-pad-ms N]"
+              << " [--vad-samples-overlap F]"
+              << " [--env-file path]"
               << " [--max-upload-bytes N]" << std::endl;
+    std::cout << "  --vad-model PATH           VAD (Silero) model file (default: third_party/whisper.cpp/models/ggml-silero-v5.1.2.bin)\n"
+              << "  --vad-threshold F          VAD speech probability threshold (default: 0.5)\n"
+              << "  --vad-min-speech-ms N      min speech segment duration (default: 250)\n"
+              << "  --vad-min-silence-ms N     silence >= this is trimmed before Whisper (default: 2000)\n"
+              << "  --vad-max-speech-s F       max speech segment before forced split (default: unlimited)\n"
+              << "  --vad-speech-pad-ms N      audio kept each side of a kept segment (default: 400)\n"
+              << "  --vad-samples-overlap F    overlap seconds between segments (default: 0.1)\n";
     std::cout << "All options can also be set via environment variables (or a .env file):" << std::endl;
     std::cout << "  MODEL_PATH, BIND_ADDRESS, PORT," << std::endl;
     std::cout << "  AUTH_TOKEN, AUTH_API_URL, AUTH_API_SECRET, AUTH_CACHE_TTL, AUTH_API_TIMEOUT," << std::endl;
     std::cout << "  TLS_CERT, TLS_KEY, MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP," << std::endl;
+    std::cout << "  TRUSTED_PROXY_HOSTS, TRUSTED_PROXY_REFRESH_SEC," << std::endl;
     std::cout << "  WHISPER_BEAM_SIZE, WHISPER_THREADS, MAX_CONCURRENT_INFERENCE," << std::endl;
-    std::cout << "  MODEL_CACHE_TTL, WHISPER_INITIAL_PROMPT, SESSION_TIMEOUT_SEC, SHUTDOWN_TIMEOUT_SEC," << std::endl;
+    std::cout << "  MODEL_CACHE_TTL, WHISPER_INITIAL_PROMPT, SESSION_TIMEOUT_SEC, HANDSHAKE_TIMEOUT_SEC, SHUTDOWN_TIMEOUT_SEC," << std::endl;
     std::cout << "  WHISPER_TEMPERATURE, WHISPER_TEMPERATURE_INC," << std::endl;
     std::cout << "  WHISPER_NO_SPEECH_THOLD, WHISPER_LOGPROB_THOLD" << std::endl;
+    std::cout << "  FLUSH_MIN_NEW_AUDIO_MS" << std::endl;
     std::cout << "  MAX_UPLOAD_BYTES" << std::endl;
     std::cout << "CLI arguments override environment variables." << std::endl;
 }
@@ -232,6 +260,10 @@ ServerConfig parseArgs(int argc, char* argv[]) {
             config.max_connections = static_cast<size_t>(std::stoul(argv[++i]));
         } else if (arg == "--max-connections-per-ip" && i + 1 < argc) {
             config.max_connections_per_ip = static_cast<size_t>(std::stoul(argv[++i]));
+        } else if (arg == "--trusted-proxy-hosts" && i + 1 < argc) {
+            config.trusted_proxy_hosts = argv[++i];
+        } else if (arg == "--trusted-proxy-refresh-sec" && i + 1 < argc) {
+            config.trusted_proxy_refresh_sec = std::stoi(argv[++i]);
         } else if (arg == "--whisper-beam-size" && i + 1 < argc) {
             config.whisper_beam_size = std::stoi(argv[++i]);
         } else if (arg == "--whisper-threads" && i + 1 < argc) {
@@ -244,6 +276,8 @@ ServerConfig parseArgs(int argc, char* argv[]) {
             config.whisper_initial_prompt = argv[++i];
         } else if (arg == "--session-timeout-sec" && i + 1 < argc) {
             config.session_timeout_sec = std::stoi(argv[++i]);
+        } else if (arg == "--handshake-timeout-sec" && i + 1 < argc) {
+            config.handshake_timeout_sec = std::stoi(argv[++i]);
         } else if (arg == "--shutdown-timeout-sec" && i + 1 < argc) {
             config.shutdown_timeout_sec = std::stoi(argv[++i]);
         } else if (arg == "--whisper-temperature" && i + 1 < argc) {
@@ -254,6 +288,22 @@ ServerConfig parseArgs(int argc, char* argv[]) {
             config.whisper_no_speech_thold = std::stof(argv[++i]);
         } else if (arg == "--whisper-logprob-thold" && i + 1 < argc) {
             config.whisper_logprob_thold = std::stof(argv[++i]);
+        } else if (arg == "--flush-min-new-audio-ms" && i + 1 < argc) {
+            config.flush_min_new_audio_ms = std::stoi(argv[++i]);
+        } else if (arg == "--vad-model" && i + 1 < argc) {
+            config.vad_model_path = argv[++i];
+        } else if (arg == "--vad-threshold" && i + 1 < argc) {
+            config.vad_threshold = std::stof(argv[++i]);
+        } else if (arg == "--vad-min-speech-ms" && i + 1 < argc) {
+            config.vad_min_speech_ms = std::stoi(argv[++i]);
+        } else if (arg == "--vad-min-silence-ms" && i + 1 < argc) {
+            config.vad_min_silence_ms = std::stoi(argv[++i]);
+        } else if (arg == "--vad-max-speech-s" && i + 1 < argc) {
+            config.vad_max_speech_s = std::stof(argv[++i]);
+        } else if (arg == "--vad-speech-pad-ms" && i + 1 < argc) {
+            config.vad_speech_pad_ms = std::stoi(argv[++i]);
+        } else if (arg == "--vad-samples-overlap" && i + 1 < argc) {
+            config.vad_samples_overlap = std::stof(argv[++i]);
         } else if (arg == "--thread-safe") {
             // accepted for backwards compatibility
         } else if (arg.rfind("--", 0) != 0 &&
@@ -311,6 +361,16 @@ void handleSession(tcp::socket socket,
                    std::shared_ptr<ssl::context> ssl_ctx) {
     ConnectionGuard guard(limiter, client_ip);
 
+    // The ConnectionGuard slot above is held from here on. Before the
+    // StreamingSession exists (and takes over via its own idle watchdog,
+    // jota-transcriber#68), the TLS handshake and the initial HTTP upgrade
+    // read below have no timeout at all otherwise: a client that opens a
+    // TCP connection and sends nothing (or trickles data arbitrarily
+    // slowly) would hold this slot forever. native_handle() is captured
+    // before any std::move below — it's the same OS-level fd regardless of
+    // which C++ wrapper currently owns it.
+    HandshakeWatchdog handshake_watchdog(socket.native_handle(), config.handshake_timeout_sec);
+
     try {
         boost::beast::flat_buffer buffer;
         http::request_parser<http::string_body> parser;
@@ -343,12 +403,20 @@ void handleSession(tcp::socket socket,
             }
 
             websocket::stream<ssl::stream<tcp::socket>> ws(std::move(ssl_stream));
+            // From here on, StreamingSession's own idle watchdog (flushLoop)
+            // owns this connection's timeout protection.
+            handshake_watchdog.disarm();
             auto session = std::make_shared<StreamingSession<websocket::stream<ssl::stream<tcp::socket>>>>(
                 std::move(ws), config.model_path, auth_manager,
                 config.whisper_beam_size, config.whisper_threads,
                 config.whisper_initial_prompt, config.session_timeout_sec,
                 config.whisper_temperature, config.whisper_temperature_inc,
-                config.whisper_no_speech_thold, config.whisper_logprob_thold);
+                config.whisper_no_speech_thold, config.whisper_logprob_thold,
+                config.flush_min_new_audio_ms,
+                config.vad_model_path, config.vad_threshold,
+                config.vad_min_speech_ms, config.vad_min_silence_ms,
+                config.vad_max_speech_s, config.vad_speech_pad_ms,
+                config.vad_samples_overlap);
             session->run(req);
         } else {
             boost::beast::http::read(socket, buffer, parser);
@@ -365,12 +433,20 @@ void handleSession(tcp::socket socket,
             }
 
             websocket::stream<tcp::socket> ws(std::move(socket));
+            // From here on, StreamingSession's own idle watchdog (flushLoop)
+            // owns this connection's timeout protection.
+            handshake_watchdog.disarm();
             auto session = std::make_shared<StreamingSession<websocket::stream<tcp::socket>>>(
                 std::move(ws), config.model_path, auth_manager,
                 config.whisper_beam_size, config.whisper_threads,
                 config.whisper_initial_prompt, config.session_timeout_sec,
                 config.whisper_temperature, config.whisper_temperature_inc,
-                config.whisper_no_speech_thold, config.whisper_logprob_thold);
+                config.whisper_no_speech_thold, config.whisper_logprob_thold,
+                config.flush_min_new_audio_ms,
+                config.vad_model_path, config.vad_threshold,
+                config.vad_min_speech_ms, config.vad_min_silence_ms,
+                config.vad_max_speech_s, config.vad_speech_pad_ms,
+                config.vad_samples_overlap);
             session->run(req);
         }
     } catch (std::exception& e) {
@@ -412,6 +488,7 @@ int main(int argc, char* argv[]) {
                   "  temperature_inc=" + std::to_string(config.whisper_temperature_inc) +
                   "  no_speech_thold=" + std::to_string(config.whisper_no_speech_thold) +
                   "  logprob_thold=" + std::to_string(config.whisper_logprob_thold));
+        Log::info("Flush:   min_new_audio_ms=" + std::to_string(config.flush_min_new_audio_ms));
         if (!config.whisper_initial_prompt.empty()) {
             Log::info("Whisper: initial_prompt=\"" + config.whisper_initial_prompt + "\"");
         }
@@ -442,6 +519,32 @@ int main(int argc, char* argv[]) {
             config.max_connections_per_ip
         );
 
+        auto trusted_resolver = std::make_shared<TrustedProxyResolver>(config.trusted_proxy_hosts);
+
+        // Refreshing trusted-proxy DNS runs on its own thread so a stalled
+        // lookup (DNS outage) can never delay the accept loop below.
+        // isTrusted() only ever reads the cache TrustedProxyResolver::refresh()
+        // last wrote; see TrustedProxyResolver.h for the concurrency contract.
+        std::atomic<bool> stop_trusted_refresh{false};
+        std::thread trusted_refresh_thread;
+        if (trusted_resolver->enabled()) {
+            Log::info("Trusted proxies (per-IP limit exempt): " + config.trusted_proxy_hosts);
+            trusted_refresh_thread = std::thread(
+                [trusted_resolver, &stop_trusted_refresh,
+                 refresh_sec = config.trusted_proxy_refresh_sec]() {
+                    trusted_resolver->refresh();  // resolve once immediately at startup
+                    while (!stop_trusted_refresh) {
+                        auto deadline = std::chrono::steady_clock::now() +
+                                        std::chrono::seconds(refresh_sec);
+                        while (!stop_trusted_refresh &&
+                               std::chrono::steady_clock::now() < deadline) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                        }
+                        if (!stop_trusted_refresh) trusted_resolver->refresh();
+                    }
+                });
+        }
+
         ApiAuthConfig auth_config;
         auth_config.static_token      = config.auth_token;
         auth_config.api_base_url      = config.auth_api_url;
@@ -466,6 +569,7 @@ int main(int argc, char* argv[]) {
             Log::info("Signal " + std::to_string(signum) + " received — stopping accept loop");
             acceptor.close();
             SessionTracker::instance().shutdownAll();
+            stop_trusted_refresh = true;
         });
 
         while (acceptor.is_open()) {
@@ -483,14 +587,16 @@ int main(int argc, char* argv[]) {
             }
 
             std::string client_ip = socket.remote_endpoint().address().to_string();
+            bool trusted = trusted_resolver->isTrusted(client_ip);
 
-            if (!limiter->tryAcquire(client_ip)) {
+            if (!limiter->tryAcquire(client_ip, trusted)) {
                 Log::warn("Connection rejected (limit reached): " + client_ip);
                 socket.close();
                 continue;
             }
 
-            Log::info("New connection from " + client_ip);
+            Log::info("New connection from " + client_ip +
+                      (trusted ? " (trusted proxy)" : ""));
 
             try {
                 session_threads.emplace_back(handleSession,
@@ -531,6 +637,8 @@ int main(int argc, char* argv[]) {
         for (auto& t : session_threads) {
             if (t.joinable()) t.join();
         }
+
+        if (trusted_refresh_thread.joinable()) trusted_refresh_thread.join();
 
         ioc.stop();
         if (ioc_thread.joinable()) ioc_thread.join();

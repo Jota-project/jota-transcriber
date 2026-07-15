@@ -55,6 +55,32 @@ TEST(ConnectionLimiter, MetricsContainExpectedKey) {
     EXPECT_NE(m.find("transcription_active_connections"), std::string::npos);
 }
 
+TEST(ConnectionLimiter, TrustedIpBypassesPerIpLimit) {
+    auto lim = std::make_shared<ConnectionLimiter>(10, 1); // per-IP cap 1
+    EXPECT_TRUE(lim->tryAcquire("1.1.1.1", true));
+    EXPECT_TRUE(lim->tryAcquire("1.1.1.1", true));  // would fail if not trusted
+    EXPECT_TRUE(lim->tryAcquire("1.1.1.1", true));
+    lim->release("1.1.1.1");
+    lim->release("1.1.1.1");
+    lim->release("1.1.1.1");
+}
+
+TEST(ConnectionLimiter, TrustedIpStillBoundedByGlobalLimit) {
+    auto lim = std::make_shared<ConnectionLimiter>(2, 1); // global cap 2
+    EXPECT_TRUE(lim->tryAcquire("1.1.1.1", true));
+    EXPECT_TRUE(lim->tryAcquire("1.1.1.1", true));
+    EXPECT_FALSE(lim->tryAcquire("1.1.1.1", true)); // global cap reached
+    lim->release("1.1.1.1");
+    lim->release("1.1.1.1");
+}
+
+TEST(ConnectionLimiter, UntrustedDefaultStillLimitedPerIp) {
+    auto lim = std::make_shared<ConnectionLimiter>(10, 1);
+    EXPECT_TRUE(lim->tryAcquire("1.1.1.1"));            // default trusted=false
+    EXPECT_FALSE(lim->tryAcquire("1.1.1.1"));           // per-IP cap 1 still applies
+    lim->release("1.1.1.1");
+}
+
 // ─── ConnectionGuard ─────────────────────────────────────────────────────────
 
 TEST(ConnectionGuard, ReleasesSlotOnDestruction) {

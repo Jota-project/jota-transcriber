@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <cfloat>
 
 struct ServerConfig {
     std::string model_path = "third_party/whisper.cpp/models/ggml-small.bin";
@@ -9,7 +10,10 @@ struct ServerConfig {
     std::string key_path;
     size_t max_connections = 8;
     size_t max_connections_per_ip = 2;
+    std::string trusted_proxy_hosts;    // CSV hostnames exempt from per-IP limit (empty = off)
+    int trusted_proxy_refresh_sec = 30; // DNS re-resolution interval for trusted hosts
     int session_timeout_sec = 30;       // seconds before disconnecting idle sessions
+    int handshake_timeout_sec = 10;     // seconds to complete TLS/HTTP-upgrade handshake before forcing the socket closed
 
     // Auth
     std::string auth_token;             // static token (simple deployments, no API needed)
@@ -29,6 +33,16 @@ struct ServerConfig {
     float whisper_temperature_inc = 0.0f;   // temperature increment on repetition (0.0 disables fallback)
     float whisper_no_speech_thold = 0.3f;   // probability threshold to reject non-speech segments
     float whisper_logprob_thold = -0.7f;    // log-prob threshold to reject low-confidence segments (-1.0=disabled)
+    int flush_min_new_audio_ms = 500;       // ms of new audio required before flushLoop re-runs inference (was hardcoded 250ms)
+
+    // VAD silence gating (Silero, via whisper.cpp public API)
+    std::string vad_model_path = "third_party/whisper.cpp/models/ggml-silero-v5.1.2.bin";
+    float vad_threshold       = 0.5f;
+    int   vad_min_speech_ms   = 250;
+    int   vad_min_silence_ms  = 2000;
+    float vad_max_speech_s    = FLT_MAX;
+    int   vad_speech_pad_ms   = 400;
+    float vad_samples_overlap = 0.1f;
 
     int shutdown_timeout_sec = 10;      // max seconds to wait for sessions to close on SIGINT/SIGTERM
     size_t max_upload_bytes = 25 * 1024 * 1024; // 25 MB — matches OpenAI limit

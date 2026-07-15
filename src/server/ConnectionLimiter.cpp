@@ -3,15 +3,15 @@
 ConnectionLimiter::ConnectionLimiter(size_t max_total, size_t max_per_ip)
     : max_total_(max_total), max_per_ip_(max_per_ip), total_(0) {}
 
-bool ConnectionLimiter::tryAcquire(const std::string& ip) {
+bool ConnectionLimiter::tryAcquire(const std::string& ip, bool trusted) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (total_ >= max_total_) {
-        return false;
+        return false;  // global cap ALWAYS applies, even for trusted proxies
     }
 
     size_t& count = per_ip_[ip];
-    if (count >= max_per_ip_) {
-        return false;
+    if (!trusted && count >= max_per_ip_) {
+        return false;  // per-IP cap only for untrusted clients
     }
 
     ++count;

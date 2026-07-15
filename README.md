@@ -1,3 +1,11 @@
+![Status: Maintained](https://img.shields.io/badge/status-Maintained-2ea44f)
+
+> **Role in Jota ecosystem:** STT streaming microservice for the Jota gateway. Receives PCM Float32 audio over WebSocket and emits partial + final transcriptions. Receives `language` and `vad_thold` from the gateway's per-client `ClientConfig`.
+>
+> Part of [Jota-project](https://github.com/Jota-project). See [`ARCHITECTURE.md`](https://github.com/Jota-project/.github/blob/main/ARCHITECTURE.md) for the full system map.
+
+---
+
 # Real-Time C++ Transcription Microservice
 
 [![CI State](https://github.com/jota-project/jota-transcriber/actions/workflows/ci.yml/badge.svg)](https://github.com/jota-project/jota-transcriber/actions)
@@ -12,7 +20,7 @@ High-performance real-time audio transcription microservice built with C++17 and
 - Real-time streaming with partial transcriptions while audio is being sent
 - WebSocket (WS) and WebSocket over TLS (WSS)
 - Authentication: static token or external API with in-memory cache
-- Per-IP and global connection limits
+- Per-IP and global connection limits, with an opt-in DNS-based exemption for a trusted gateway proxy
 - Non-blocking inference — GPU saturation skips a cycle instead of blocking
 - Audio buffer high-water mark (20s) with client-side warning
 - Hallucination guard against Whisper decoder loops
@@ -45,6 +53,9 @@ cmake --build build -j$(nproc)
 # Example: small model (~500 MB, good balance of speed and accuracy)
 cd third_party/whisper.cpp/models
 ./download-ggml-model.sh small
+
+# Silero VAD model (required — silence gating is always on)
+./download-vad-model.sh silero-v5.1.2
 ```
 
 ### Run
@@ -70,9 +81,17 @@ cd third_party/whisper.cpp/models
   --auth-api-url http://auth-service:8080/validate \
   --auth-api-secret API_SECRET
 
+# With a trusted gateway proxy (exempt from the per-IP cap — see below)
+./build/jota-transcriber \
+  --model /path/to/ggml-small.bin \
+  --max-connections 8 --max-connections-per-ip 2 \
+  --trusted-proxy-hosts jota-gateway --trusted-proxy-refresh-sec 30
+
 # Generate self-signed certs for development
 ./generate_certs.sh
 ```
+
+> **Note on auth:** `AUTH_API_URL` was originally designed to point to `jota-db`. The recommended path forward is per-service `AUTH_TOKEN` (static), with `AUTH_API_URL` kept only for setups that still centralize auth via `jota-db`. The deprecation of `jota-db` as default auth backend is tracked in [`Jota-project/jota-gateway` issues](https://github.com/Jota-project/jota-gateway/issues).
 
 ### Run tests
 
@@ -94,7 +113,7 @@ docker-compose build --build-arg GGML_CUDA=0
 docker-compose up
 ```
 
-Model files must be placed in `./models/` before starting (mounted at `/app/models/` inside the container).
+Model files must be placed in `./models/` before starting (mounted at `/app/models/` inside the container). This must include the Silero VAD model (`ggml-silero-v5.1.2.bin`) alongside the main Whisper model — silence gating is always on and has no environment-variable override, so `docker-compose.yml` passes `--vad-model /app/models/ggml-silero-v5.1.2.bin` explicitly.
 
 ## CLI Reference
 
@@ -112,6 +131,8 @@ Model files must be placed in `./models/` before starting (mounted at `/app/mode
 | `--auth-api-timeout N` | `5` | Auth API request timeout in seconds |
 | `--max-connections N` | `8` | Global connection cap |
 | `--max-connections-per-ip N` | `2` | Per-IP connection cap |
+| `--trusted-proxy-hosts HOSTS` | — | CSV hostnames exempt from the per-IP cap (empty = disabled). See [Trusted Proxy Exemption](#trusted-proxy-exemption-per-ip-limit) |
+| `--trusted-proxy-refresh-sec N` | `30` | DNS re-resolution interval for `--trusted-proxy-hosts` |
 | `--session-timeout-sec N` | `30` | Idle session timeout |
 | `--shutdown-timeout-sec N` | `10` | Graceful shutdown wait |
 | `--whisper-beam-size N` | `1` | Beam size (1 = greedy, fastest) |
@@ -119,8 +140,39 @@ Model files must be placed in `./models/` before starting (mounted at `/app/mode
 | `--max-concurrent-inference N` | `4` | Max simultaneous Whisper decodes |
 | `--model-cache-ttl N` | `300` | Seconds to keep model loaded after last session (-1 = forever) |
 | `--whisper-initial-prompt TEXT` | — | Decoder initial prompt for vocabulary guidance |
+| `--vad-model PATH` | `third_party/whisper.cpp/models/ggml-silero-v5.1.2.bin` | Silero VAD model file — silence gating is always on |
+| `--vad-threshold F` | `0.5` | VAD speech probability threshold |
+| `--vad-min-speech-ms N` | `250` | Minimum speech segment duration |
+| `--vad-min-silence-ms N` | `2000` | Silence ≥ this duration is trimmed before Whisper decoding |
+| `--vad-max-speech-s F` | unlimited | Max speech segment duration before a forced split |
+| `--vad-speech-pad-ms N` | `400` | Audio kept on each side of a detected speech segment |
+| `--vad-samples-overlap F` | `0.1` | Overlap (seconds) between adjacent speech segments |
 
-All flags are also available as environment variables (see `.env.example`).
+All flags are also available as environment variables (see `.env.example`), **except the `--vad-*` flags**, which are CLI-only — pass them via `command:` in `docker-compose.yml` if not using the defaults.
+
+## Trusted Proxy Exemption (Per-IP Limit)
+
+`--max-connections-per-ip` caps how many simultaneous sessions a single IP can hold, to stop one client from monopolizing the service. In production the only real client is often a single shared gateway process (e.g. `jota-gateway`) proxying many real users from one IP — which turns the per-IP cap into a de-facto global cap, independent of how many real users are active.
+
+`--trusted-proxy-hosts` exempts a configured gateway (identified by hostname, resolved via DNS) from the per-IP cap. This **only** widens the per-IP allowance — the global `--max-connections` cap and authentication (`--auth-token` / `--auth-api-url`) are never affected.
+
+**How it works:**
+- Configure one or more hostnames (not IPs), comma-separated. Empty (the default) = feature off, zero behavior change.
+- Every `--trusted-proxy-refresh-sec` seconds (default `30`), the server re-resolves each hostname via `getaddrinfo` (IPv4 + IPv6) and caches the result.
+- **Fail-closed:** a hostname that has never resolved trusts nothing. A later transient resolution failure keeps that host's last known-good IPs — one flaky host among several doesn't undo another host's trust.
+- Internals: `src/server/TrustedProxyResolver.h` / `.cpp`.
+
+**Configuration:**
+
+| CLI flag | Env var | Default | Description |
+|---|---|---|---|
+| `--trusted-proxy-hosts HOSTS` | `TRUSTED_PROXY_HOSTS` | *(empty = disabled)* | Comma-separated hostnames exempt from the per-IP cap |
+| `--trusted-proxy-refresh-sec N` | `TRUSTED_PROXY_REFRESH_SEC` | `30` | DNS re-resolution interval in seconds |
+
+**Deploy scenarios:**
+- **docker-compose / same host** — this repo's `docker-compose.yml` uses `network_mode: host`, so the gateway and transcriber share the host's network namespace; `--trusted-proxy-hosts localhost` (or the host's own hostname) is usually correct.
+- **Kubernetes** — point at the gateway's Service DNS name, e.g. `--trusted-proxy-hosts jota-gateway.default.svc.cluster.local`. CoreDNS resolves it to the current pod IP(s) on each refresh, so pod restarts/rescheduling don't require a config change.
+- **Dual-stack caveat** — on a dual-stack bind (`--bind ::`), Boost.Asio reports IPv4 peers as `::ffff:a.b.c.d`, but DNS resolution returns bare IPv4 addresses, so an IPv4 trusted host won't match in that setup. This fails closed (not a security issue), but is a silent no-op worth knowing about when troubleshooting.
 
 ## WebSocket Protocol
 
@@ -220,24 +272,31 @@ Always build with `-DBUILD_SHARED_LIBS=OFF`. whisper.cpp defaults to shared libs
 ## Testing
 
 ```bash
-./run_tests.sh                                      # all 68 tests
+./run_tests.sh                                      # all 144 tests
 ./build/tests/unit_tests --gtest_filter=AudioPipeline*      # one suite
 ./build/tests/unit_tests --gtest_filter=-*ModelCache*       # skip model-dependent
 ```
 
 | Test file | Tests | Needs model |
 |---|---|---|
-| `test_hallucination_guard.cpp` | 9 | No |
+| `test_hallucination_guard.cpp` | 10 | No |
 | `test_audio_pipeline.cpp` | 8 | No |
-| `test_inference_limiter.cpp` | 8 | No |
-| `test_connection_limiter.cpp` | 7 | No |
+| `test_inference_limiter.cpp` | 14 | No |
+| `test_connection_limiter.cpp` | 10 | No |
+| `test_trusted_proxy_resolver.cpp` | 12 | No |
 | `test_session_tracker.cpp` | 4 | No |
-| `test_model_cache.cpp` | 7 | Yes |
+| `test_model_cache.cpp` | 10 | Yes |
 | `test_streaming_whisper_engine.cpp` | 25 | Yes |
 
 ## Client Examples
 
 See [`clients/`](clients/) for a Python test client (file / mic / synthetic audio) and the full API reference.
+
+## Status & roadmap
+
+- **Status:** Maintained. Recent work (2026-05) focused on stability fixes — `ModelCache` RAII, `AudioDecoder` robustness, `InferenceLimiter` TOCTOU.
+- **Known issue:** race condition between `flushLoop` and `handleEnd` may emit duplicate `is_final` transcriptions. Fix is straightforward; see issue #27.
+- **Auth migration:** the default auth path will move from `jota-db` external API to per-service `AUTH_TOKEN` static. `AUTH_API_URL` will remain as an option.
 
 ---
 

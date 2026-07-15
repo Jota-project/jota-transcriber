@@ -14,6 +14,7 @@
 #include <unordered_map>
 #include <nlohmann/json.hpp>
 #include <iostream>
+#include <cfloat>
 #include "whisper/StreamingWhisperEngine.h"
 #include "whisper/ModelCache.h"
 #include "server/SessionTracker.h"
@@ -22,12 +23,18 @@
 #include "log/Log.h"
 #include "utils/HallucinationGuard.h"
 #include "whisper/InferenceLimiter.h"
+#include "server/SocketUtil.h"
 
 namespace beast = boost::beast;
 namespace websocket = beast::websocket;
 namespace net = boost::asio;
 using tcp = net::ip::tcp;
 using json = nlohmann::json;
+
+// ms of audio @16kHz mono float32 → sample count.
+inline size_t msToSamples16kHz(int ms) {
+    return static_cast<size_t>(ms) * 16;
+}
 
 template <class StreamType>
 class StreamingSession : public std::enable_shared_from_this<StreamingSession<StreamType>>, public SessionTracker::SessionBase {
@@ -43,13 +50,22 @@ public:
         float whisper_temperature = 0.2f,
         float whisper_temperature_inc = 0.2f,
         float whisper_no_speech_thold = 0.3f,
-        float whisper_logprob_thold = -1.0f
+        float whisper_logprob_thold = -1.0f,
+        int flush_min_new_audio_ms = 500,
+        const std::string& vad_model_path = "",
+        float vad_threshold = 0.5f,
+        int vad_min_speech_ms = 250,
+        int vad_min_silence_ms = 2000,
+        float vad_max_speech_s = FLT_MAX,
+        int vad_speech_pad_ms = 400,
+        float vad_samples_overlap = 0.1f
     )
         : ws_(std::move(ws)),
           model_path_(model_path),
           auth_manager_(auth_manager),
           configured_(false),
           buffer_overflowed_(false),
+          capacity_degraded_(false),
           last_transcribed_size_(0),
           language_("es"),
           whisper_beam_size_(whisper_beam_size),
@@ -60,6 +76,14 @@ public:
           whisper_temperature_inc_(whisper_temperature_inc),
           whisper_no_speech_thold_(whisper_no_speech_thold),
           whisper_logprob_thold_(whisper_logprob_thold),
+          flush_min_new_audio_ms_(flush_min_new_audio_ms),
+          vad_model_path_(vad_model_path),
+          vad_threshold_(vad_threshold),
+          vad_min_speech_ms_(vad_min_speech_ms),
+          vad_min_silence_ms_(vad_min_silence_ms),
+          vad_max_speech_s_(vad_max_speech_s),
+          vad_speech_pad_ms_(vad_speech_pad_ms),
+          vad_samples_overlap_(vad_samples_overlap),
           model_acquired_(false),
           bytes_received_in_window_(0),
           rate_limit_start_(std::chrono::steady_clock::now()),
@@ -78,28 +102,25 @@ public:
     }
 
     void shutdown() override {
-        // Triggered asynchronously by signal handler. We try to close cleanly if we can.
+        // Triggered asynchronously by signal handler (SessionTracker::shutdownAll()),
+        // from a thread other than the one possibly blocked in ws_.read() below.
+        // .cancel() alone only cancels pending *async* operations — it does not
+        // reliably interrupt a synchronous read already in progress (same gotcha
+        // as the idle-watchdog in flushLoop(), see jota-transcriber#68). Force-shut
+        // the native socket too, so a blocked read unblocks with an error either way.
         boost::system::error_code ec;
         beast::get_lowest_layer(ws_).cancel(ec);
+        forceSocketShutdown(beast::get_lowest_layer(ws_).native_handle());
     }
 
     template<class Req>
     void run(const Req& req) {
         try {
-            if (session_timeout_sec_ > 0) {
-                // Set native socket receive timeout to drop idle/zombie connections
-                auto native_socket = beast::get_lowest_layer(ws_).native_handle();
-#if defined(_WIN32)
-                DWORD timeout = session_timeout_sec_ * 1000;
-                setsockopt(native_socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
-#else
-                struct timeval tv;
-                tv.tv_sec = session_timeout_sec_;
-                tv.tv_usec = 0;
-                setsockopt(native_socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-#endif
-            }
-
+            // Idle timeout is enforced by flushLoop()'s watchdog (see below), not by
+            // SO_RCVTIMEO: that socket option does not reliably interrupt a
+            // synchronous Boost.Asio/Beast read (jota-transcriber#68) — Asio treats
+            // the resulting EWOULDBLOCK as a spurious wakeup and retries the
+            // blocking read instead of propagating a timeout.
             ws_.accept(req);
             Log::info("WebSocket handshake accepted", session_id_);
 
@@ -352,12 +373,19 @@ private:
                 engine_->setTemperatureInc(whisper_temperature_inc_);
                 engine_->setNoSpeechThreshold(whisper_no_speech_thold_);
                 engine_->setLogprobThreshold(whisper_logprob_thold_);
+                if (!vad_model_path_.empty()) {
+                    engine_->setVadConfig(vad_model_path_, vad_threshold_,
+                                          vad_min_speech_ms_, vad_min_silence_ms_,
+                                          vad_max_speech_s_, vad_speech_pad_ms_,
+                                          vad_samples_overlap_);
+                }
                 if (!whisper_initial_prompt_.empty()) {
                     engine_->setInitialPrompt(whisper_initial_prompt_);
                 }
 
                 configured_ = true;
                 last_transcribed_size_ = 0;
+                capacity_degraded_ = false;
                 full_transcription_    = "";
                 raw_transcription_     = "";
                 last_audio_time_ = std::chrono::steady_clock::now();
@@ -385,13 +413,26 @@ private:
         stopFlushLoop();
 
         std::string final_text;
+        bool complete = true;
+        std::string incomplete_reason;
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             if (engine_) {
-                auto res = engine_->transcribeSlidingWindow(true); // force commit
-                // Note: no hallucination guard here — this is the last chance to capture audio
-                // that the engine still holds in its buffer.
-                full_transcription_ += res.committed_text;
+                // Bounded wait: don't let the final decode compete indefinitely for a
+                // saturated GPU (jota-project/jota-transcriber#62). If no slot frees up
+                // within the timeout, fall back to whatever was already committed instead
+                // of blocking session close indefinitely.
+                InferenceLimiter::TryGuard guard(std::chrono::milliseconds(3000));
+                if (guard.acquired()) {
+                    auto res = engine_->transcribeSlidingWindow(true); // force commit
+                    // Note: no hallucination guard here — this is the last chance to capture audio
+                    // that the engine still holds in its buffer.
+                    full_transcription_ += res.committed_text;
+                } else {
+                    complete = false;
+                    incomplete_reason = "gpu_saturated_timeout";
+                    Log::warn("handleEnd: timeout esperando slot de inferencia, usando texto parcial/raw acumulado", session_id_);
+                }
             }
 
             // Fallback: if all flushLoop commits were hallucination-filtered (audio was erased
@@ -412,6 +453,10 @@ private:
             {"text", final_text},
             {"is_final", true}
         };
+        if (!complete) {
+            msg["complete"] = false;
+            msg["reason"] = incomplete_reason;
+        }
         sendMessage(msg);
 
         try {
@@ -449,6 +494,7 @@ private:
     std::string session_id_;
     bool configured_;
     bool buffer_overflowed_; // true while engine buffer is above 20s HWM
+    bool capacity_degraded_; // true while this session's own inference cycles are being skipped (GPU saturated)
     size_t last_transcribed_size_;
     std::string language_;
 
@@ -461,6 +507,14 @@ private:
     float whisper_temperature_inc_;
     float whisper_no_speech_thold_;
     float whisper_logprob_thold_;
+    int flush_min_new_audio_ms_;
+    std::string vad_model_path_;
+    float vad_threshold_;
+    int   vad_min_speech_ms_;
+    int   vad_min_silence_ms_;
+    float vad_max_speech_s_;
+    int   vad_speech_pad_ms_;
+    float vad_samples_overlap_;
     bool model_acquired_;
     
     // Rate limiting & Timeout
@@ -475,6 +529,7 @@ private:
     std::mutex flush_cv_mutex_;
     std::condition_variable flush_cv_;
     std::chrono::steady_clock::time_point last_audio_time_;
+    bool idle_shutdown_triggered_ = false;
 
     // Sliding window logic
     std::string full_transcription_;     // filtered (hallucinations discarded)
@@ -497,7 +552,7 @@ private:
         // Handles ALL inference, decoupled from the WebSocket receive loop.
         // Triggers on: 250ms of new audio accumulated, OR 400ms of silence with unprocessed audio.
         // Does NOT trigger if buffer < 2s: Whisper hallucinates badly on very short windows.
-        const size_t MIN_NEW_SAMPLES    = 4000;  // 250ms @ 16kHz
+        const size_t MIN_NEW_SAMPLES    = msToSamples16kHz(flush_min_new_audio_ms_);
         const size_t MIN_BUFFER_SAMPLES = 32000; // 2s minimum before first inference
 
         while (flush_running_) {
@@ -511,6 +566,26 @@ private:
             std::unique_lock<std::mutex> lock(state_mutex_, std::defer_lock);
             if (!lock.try_lock()) {
                 continue;
+            }
+
+            // Idle watchdog (jota-transcriber#68): a client that goes quiet without
+            // ever sending a WS close frame — network partition, crash, or just
+            // abandoning the connection — must not hang ws_.read() on the main
+            // thread forever, since that leaks this session's ConnectionLimiter
+            // slot indefinitely. SO_RCVTIMEO on the native socket doesn't reliably
+            // interrupt that synchronous read, so force it from here instead:
+            // this thread runs regardless of configured_/engine_ state, so an
+            // unconfigured session (never sent "config") is covered too.
+            if (session_timeout_sec_ > 0 && !idle_shutdown_triggered_) {
+                auto idle_s = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now() - last_audio_time_).count();
+                if (idle_s >= session_timeout_sec_) {
+                    idle_shutdown_triggered_ = true;
+                    Log::warn("Idle timeout (" + std::to_string(idle_s) + "s >= " +
+                              std::to_string(session_timeout_sec_) +
+                              "s), forcing socket shutdown", session_id_);
+                    forceSocketShutdown(beast::get_lowest_layer(ws_).native_handle());
+                }
             }
 
             if (!configured_ || !engine_) continue;
@@ -536,7 +611,21 @@ private:
             InferenceLimiter::TryGuard inf_guard;
             if (!inf_guard.acquired()) {
                 Log::debug("flushLoop: GPU busy, skipping inference cycle", session_id_);
+                if (!capacity_degraded_) {
+                    capacity_degraded_ = true;
+                    Log::warn("flushLoop: entrando en estado busy (gpu_saturated)", session_id_);
+                    lock.unlock();
+                    sendMessage({{"type", "status"}, {"state", "busy"}, {"reason", "gpu_saturated"}});
+                    lock.lock();
+                }
                 continue;
+            }
+            if (capacity_degraded_) {
+                capacity_degraded_ = false;
+                Log::info("flushLoop: saliendo de estado busy", session_id_);
+                lock.unlock();
+                sendMessage({{"type", "status"}, {"state", "ok"}});
+                lock.lock();
             }
             auto res = engine_->transcribeSlidingWindow(false);
             // inf_guard releases the slot automatically on scope exit (including exceptions)

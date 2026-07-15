@@ -7,7 +7,7 @@ class ConnectionLimiter {
 public:
     ConnectionLimiter(size_t max_total, size_t max_per_ip);
 
-    bool tryAcquire(const std::string& ip);
+    bool tryAcquire(const std::string& ip, bool trusted = false);
     void release(const std::string& ip);
 
     std::string getMetrics() const;
