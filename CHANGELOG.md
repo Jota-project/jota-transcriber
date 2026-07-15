@@ -1,3 +1,10 @@
+# [1.3.0](https://github.com/Jota-project/jota-transcriber/compare/v1.2.0...v1.3.0) (2026-07-15)
+
+
+### Features
+
+* **vad:** silence gating real con Silero VAD (whisper.cpp) — Hilo C de [#64](https://github.com/Jota-project/jota-transcriber/issues/64) ([#71](https://github.com/Jota-project/jota-transcriber/issues/71)) ([27e392e](https://github.com/Jota-project/jota-transcriber/commit/27e392e01bde0a8e3c3c4d58069f39c12f8f797d))
+
 # [1.2.0](https://github.com/Jota-project/jota-transcriber/compare/v1.1.7...v1.2.0) (2026-07-09)
 
 
