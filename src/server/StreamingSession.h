@@ -23,6 +23,7 @@
 #include "log/Log.h"
 #include "utils/HallucinationGuard.h"
 #include "whisper/InferenceLimiter.h"
+#include "server/SocketUtil.h"
 
 namespace beast = boost::beast;
 namespace websocket = beast::websocket;
@@ -101,28 +102,25 @@ public:
     }
 
     void shutdown() override {
-        // Triggered asynchronously by signal handler. We try to close cleanly if we can.
+        // Triggered asynchronously by signal handler (SessionTracker::shutdownAll()),
+        // from a thread other than the one possibly blocked in ws_.read() below.
+        // .cancel() alone only cancels pending *async* operations — it does not
+        // reliably interrupt a synchronous read already in progress (same gotcha
+        // as the idle-watchdog in flushLoop(), see jota-transcriber#68). Force-shut
+        // the native socket too, so a blocked read unblocks with an error either way.
         boost::system::error_code ec;
         beast::get_lowest_layer(ws_).cancel(ec);
+        forceSocketShutdown(beast::get_lowest_layer(ws_).native_handle());
     }
 
     template<class Req>
     void run(const Req& req) {
         try {
-            if (session_timeout_sec_ > 0) {
-                // Set native socket receive timeout to drop idle/zombie connections
-                auto native_socket = beast::get_lowest_layer(ws_).native_handle();
-#if defined(_WIN32)
-                DWORD timeout = session_timeout_sec_ * 1000;
-                setsockopt(native_socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
-#else
-                struct timeval tv;
-                tv.tv_sec = session_timeout_sec_;
-                tv.tv_usec = 0;
-                setsockopt(native_socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-#endif
-            }
-
+            // Idle timeout is enforced by flushLoop()'s watchdog (see below), not by
+            // SO_RCVTIMEO: that socket option does not reliably interrupt a
+            // synchronous Boost.Asio/Beast read (jota-transcriber#68) — Asio treats
+            // the resulting EWOULDBLOCK as a spurious wakeup and retries the
+            // blocking read instead of propagating a timeout.
             ws_.accept(req);
             Log::info("WebSocket handshake accepted", session_id_);
 
@@ -531,6 +529,7 @@ private:
     std::mutex flush_cv_mutex_;
     std::condition_variable flush_cv_;
     std::chrono::steady_clock::time_point last_audio_time_;
+    bool idle_shutdown_triggered_ = false;
 
     // Sliding window logic
     std::string full_transcription_;     // filtered (hallucinations discarded)
@@ -567,6 +566,26 @@ private:
             std::unique_lock<std::mutex> lock(state_mutex_, std::defer_lock);
             if (!lock.try_lock()) {
                 continue;
+            }
+
+            // Idle watchdog (jota-transcriber#68): a client that goes quiet without
+            // ever sending a WS close frame — network partition, crash, or just
+            // abandoning the connection — must not hang ws_.read() on the main
+            // thread forever, since that leaks this session's ConnectionLimiter
+            // slot indefinitely. SO_RCVTIMEO on the native socket doesn't reliably
+            // interrupt that synchronous read, so force it from here instead:
+            // this thread runs regardless of configured_/engine_ state, so an
+            // unconfigured session (never sent "config") is covered too.
+            if (session_timeout_sec_ > 0 && !idle_shutdown_triggered_) {
+                auto idle_s = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now() - last_audio_time_).count();
+                if (idle_s >= session_timeout_sec_) {
+                    idle_shutdown_triggered_ = true;
+                    Log::warn("Idle timeout (" + std::to_string(idle_s) + "s >= " +
+                              std::to_string(session_timeout_sec_) +
+                              "s), forcing socket shutdown", session_id_);
+                    forceSocketShutdown(beast::get_lowest_layer(ws_).native_handle());
+                }
             }
 
             if (!configured_ || !engine_) continue;

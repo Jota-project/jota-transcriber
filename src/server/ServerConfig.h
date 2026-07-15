@@ -10,7 +10,10 @@ struct ServerConfig {
     std::string key_path;
     size_t max_connections = 8;
     size_t max_connections_per_ip = 2;
+    std::string trusted_proxy_hosts;    // CSV hostnames exempt from per-IP limit (empty = off)
+    int trusted_proxy_refresh_sec = 30; // DNS re-resolution interval for trusted hosts
     int session_timeout_sec = 30;       // seconds before disconnecting idle sessions
+    int handshake_timeout_sec = 10;     // seconds to complete TLS/HTTP-upgrade handshake before forcing the socket closed
 
     // Auth
     std::string auth_token;             // static token (simple deployments, no API needed)
