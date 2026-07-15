@@ -1,3 +1,10 @@
+## [1.3.4](https://github.com/Jota-project/jota-transcriber/compare/v1.3.3...v1.3.4) (2026-07-15)
+
+
+### Bug Fixes
+
+* restore binary name in docker-compose command override ([#80](https://github.com/Jota-project/jota-transcriber/issues/80)) ([f3e2095](https://github.com/Jota-project/jota-transcriber/commit/f3e20956bbc1cb65552b7b81f694135cfb690209))
+
 ## [1.3.3](https://github.com/Jota-project/jota-transcriber/compare/v1.3.2...v1.3.3) (2026-07-15)
 
 
