@@ -263,7 +263,7 @@ Always build with `-DBUILD_SHARED_LIBS=OFF`. whisper.cpp defaults to shared libs
 ## Testing
 
 ```bash
-./run_tests.sh                                      # all 140 tests
+./run_tests.sh                                      # all 144 tests
 ./build/tests/unit_tests --gtest_filter=AudioPipeline*      # one suite
 ./build/tests/unit_tests --gtest_filter=-*ModelCache*       # skip model-dependent
 ```
@@ -274,7 +274,7 @@ Always build with `-DBUILD_SHARED_LIBS=OFF`. whisper.cpp defaults to shared libs
 | `test_audio_pipeline.cpp` | 8 | No |
 | `test_inference_limiter.cpp` | 14 | No |
 | `test_connection_limiter.cpp` | 10 | No |
-| `test_trusted_proxy_resolver.cpp` | 7 | No |
+| `test_trusted_proxy_resolver.cpp` | 11 | No |
 | `test_session_tracker.cpp` | 4 | No |
 | `test_model_cache.cpp` | 10 | Yes |
 | `test_streaming_whisper_engine.cpp` | 25 | Yes |

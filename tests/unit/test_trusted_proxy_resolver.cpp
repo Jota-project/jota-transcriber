@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "server/TrustedProxyResolver.h"
+#include <algorithm>
 #include <atomic>
 
 TEST(TrustedProxyResolver, EmptyHostsDisabled) {
@@ -85,4 +86,41 @@ TEST(TrustedProxyResolver, MultiHostPartialFailureKeepsOtherHostGoodIps) {
     // NOT be evicted just because hostB failed this round.
     EXPECT_TRUE(r.isTrusted("10.0.0.1"));
     EXPECT_TRUE(r.isTrusted("10.0.0.2"));
+}
+
+// Exercises the real getaddrinfo-backed resolver (no injected ResolveFn).
+// "localhost" resolves deterministically via /etc/hosts, no network needed.
+TEST(TrustedProxyResolver, DefaultResolverResolvesLocalhost) {
+    auto ips = TrustedProxyResolver::defaultResolver("localhost");
+    ASSERT_FALSE(ips.empty());
+    bool has_loopback = std::find(ips.begin(), ips.end(), "127.0.0.1") != ips.end() ||
+                         std::find(ips.begin(), ips.end(), "::1") != ips.end();
+    EXPECT_TRUE(has_loopback);
+}
+
+TEST(TrustedProxyResolver, DefaultResolverReturnsEmptyForUnresolvableHost) {
+    auto ips = TrustedProxyResolver::defaultResolver("this-host-does-not-exist.invalid");
+    EXPECT_TRUE(ips.empty());
+}
+
+// Whitespace around hosts and empty segments between commas must be
+// trimmed/dropped so the resolver queries clean hostnames.
+TEST(TrustedProxyResolver, ParsesCsvWithWhitespaceAndEmptySegments) {
+    TrustedProxyResolver r(" hostA , , hostB ", 30,
+        [](const std::string& host) -> std::vector<std::string> {
+            if (host == "hostA") return {"10.0.0.1"};
+            if (host == "hostB") return {"10.0.0.2"};
+            return {};  // untrimmed host string (e.g. " hostA ") would land here
+        });
+    EXPECT_TRUE(r.enabled());
+    EXPECT_TRUE(r.isTrusted("10.0.0.1"));
+    EXPECT_TRUE(r.isTrusted("10.0.0.2"));
+}
+
+// A CSV string that is only whitespace/commas has no real hosts -> disabled,
+// same as an empty string.
+TEST(TrustedProxyResolver, AllWhitespaceOrEmptySegmentsCsvDisabled) {
+    TrustedProxyResolver r(" , ,  ", 30);
+    EXPECT_FALSE(r.enabled());
+    EXPECT_FALSE(r.isTrusted("127.0.0.1"));
 }
