@@ -65,6 +65,7 @@ public:
           auth_manager_(auth_manager),
           configured_(false),
           buffer_overflowed_(false),
+          dropped_chunks_(0),
           capacity_degraded_(false),
           last_transcribed_size_(0),
           language_("es"),
@@ -210,18 +211,26 @@ private:
 
         last_audio_time_ = std::chrono::steady_clock::now();
         bool overflow = engine_->processAudioChunk(audio);
-        bool should_warn = overflow && !buffer_overflowed_;
-        buffer_overflowed_ = overflow;
+        bool entering_episode = overflow && !buffer_overflowed_;
+        size_t current_dropped = 0;
+        if (overflow) {
+            buffer_overflowed_ = true;
+            current_dropped = ++dropped_chunks_;
+        }
         lock.unlock();
 
-        if (should_warn) {
-            Log::warn("Audio buffer full, dropping incoming audio", session_id_);
-            json warning = {
+        if (entering_episode) {
+            Log::warn("Audio buffer full, entrando en pausa de flujo", session_id_);
+            sendMessage({{"type", "flow_control"}, {"action", "pause"}});
+        }
+        constexpr size_t WARNING_INTERVAL_CHUNKS = 10;
+        if (overflow && current_dropped % WARNING_INTERVAL_CHUNKS == 0) {
+            sendMessage({
                 {"type", "warning"},
                 {"code", "buffer_full"},
+                {"dropped_chunks", current_dropped},
                 {"message", "Audio buffer full, dropping incoming audio"}
-            };
-            sendMessage(warning);
+            });
         }
         // Inference is handled entirely by flushLoop to avoid blocking the receive loop.
     }
@@ -493,7 +502,8 @@ private:
     std::unique_ptr<StreamingWhisperEngine> engine_;
     std::string session_id_;
     bool configured_;
-    bool buffer_overflowed_; // true while engine buffer is above 20s HWM
+    bool buffer_overflowed_; // true while a saturation episode (HWM..LWM hysteresis) is active
+    size_t dropped_chunks_;  // chunks dropped in the CURRENT episode; resets to 0 when it ends
     bool capacity_degraded_; // true while this session's own inference cycles are being skipped (GPU saturated)
     size_t last_transcribed_size_;
     std::string language_;

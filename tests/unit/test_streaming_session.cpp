@@ -16,6 +16,12 @@
 #include <cstring>
 #include <future>
 
+static std::vector<unsigned char> toBytes(const std::vector<float>& samples) {
+    std::vector<unsigned char> bytes(samples.size() * sizeof(float));
+    std::memcpy(bytes.data(), samples.data(), bytes.size());
+    return bytes;
+}
+
 namespace beast = boost::beast;
 namespace http = beast::http;
 namespace websocket = beast::websocket;
@@ -343,6 +349,49 @@ TEST_F(StreamingSessionTest, EmitsStatusBusyThenOkAroundGpuSaturation) {
     auto status2 = client.recvJson();
     EXPECT_EQ(status2["type"], "status");
     EXPECT_EQ(status2["state"], "ok");
+}
+
+TEST_F(StreamingSessionTest, FlowControlPauseAndPeriodicWarningOnSustainedOverflow) {
+    auto port = startServer(false);
+    auto client = connect(port);
+
+    client.sendJson({{"type", "config"}, {"language", "es"}});
+    EXPECT_EQ(client.recvJson()["type"], "ready");
+
+    // Fill the buffer to exactly the 20s HWM using multiple sub-1MB frames (real
+    // clients never send 20s in one frame — README recommends 100-500ms chunks —
+    // and a single 1.28MB frame would collide with the 1MB MAX_FRAME_BYTES guard
+    // in handleBinaryMessage()). Each 5s/320000-byte chunk is well under that
+    // limit. The HWM check compares against the buffer size BEFORE each chunk
+    // (0s, 5s, 10s, 15s — all under 20s), so none of these fill chunks are
+    // dropped and the buffer lands exactly at HWM.
+    constexpr size_t HWM = 16000 * 20;
+    constexpr size_t FILL_CHUNK_SAMPLES = 16000 * 5; // 5s, 320000 bytes per frame — under the 1MB frame limit
+    for (size_t sent = 0; sent < HWM; sent += FILL_CHUNK_SAMPLES) {
+        client.sendBinary(toBytes(std::vector<float>(FILL_CHUNK_SAMPLES, 0.0f)));
+    }
+
+    // 25 filler chunks (0.2s each) sent while the buffer already sits at the HWM —
+    // every one of them gets dropped. Pure silence never gets committed by
+    // transcribeSlidingWindow() (whisper finds no segments), so the buffer stays
+    // flat at exactly HWM for the whole test: no race with flushLoop draining it.
+    std::vector<float> filler(3200, 0.0f); // 0.2s @16kHz
+    for (int i = 0; i < 25; ++i) {
+        client.sendBinary(toBytes(filler));
+    }
+
+    auto pause = client.recvJson();
+    EXPECT_EQ(pause["type"], "flow_control");
+    EXPECT_EQ(pause["action"], "pause");
+
+    auto warn1 = client.recvJson();
+    EXPECT_EQ(warn1["type"], "warning");
+    EXPECT_EQ(warn1["code"], "buffer_full");
+    EXPECT_EQ(warn1["dropped_chunks"], 10);
+
+    auto warn2 = client.recvJson();
+    EXPECT_EQ(warn2["type"], "warning");
+    EXPECT_EQ(warn2["dropped_chunks"], 20);
 }
 
 TEST_F(StreamingSessionTest, DoubleConfig) {
