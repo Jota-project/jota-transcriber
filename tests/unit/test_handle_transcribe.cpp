@@ -641,3 +641,27 @@ TEST_F(HandleTranscribeTest, VadEnabledTranslatesVerboseJsonTimestampsToOriginal
     // times on the ORIGINAL (padded) timeline, not the trimmed one.
     EXPECT_GT(j["segments"][0]["start"].get<float>(), 1.0f);
 }
+
+TEST_F(HandleTranscribeTest, HttpTemperatureIncUsesHttpOnlyConfigField) {
+    // Sanity on the default from Task 1.
+    EXPECT_FLOAT_EQ(ServerConfig{}.whisper_temperature_inc_http, 0.2f);
+
+    // Distinct from both defaults, to prove HandleTranscribe reads THIS
+    // field and not whisper_temperature_inc (left at its 0.0 WS default).
+    config.whisper_temperature_inc_http = 0.4f;
+    ASSERT_FLOAT_EQ(config.whisper_temperature_inc, 0.0f);
+
+    auto audio = makeSilentWav(0.5f);
+    auto body  = makeMultipartBody("bnd", audio, "en");
+
+    http::request<http::string_body> req{http::verb::post, "/v1/audio/transcriptions", 11};
+    req.set(http::field::content_type, "multipart/form-data; boundary=bnd");
+    req.body() = body;
+    req.prepare_payload();
+
+    http::response<http::string_body> res;
+    HandleTranscribe::handle(req, [&](http::response<http::string_body> r) { res = std::move(r); },
+                             config, no_auth);
+
+    EXPECT_EQ(res.result(), http::status::ok);
+}

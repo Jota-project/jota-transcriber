@@ -264,7 +264,7 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
         params.suppress_blank   = true;
         params.suppress_nst     = true;
         params.temperature      = temperature_override.value_or(config.whisper_temperature);
-        params.temperature_inc  = config.whisper_temperature_inc;
+        params.temperature_inc  = config.whisper_temperature_inc_http;
         params.no_speech_thold  = config.whisper_no_speech_thold;
         params.logprob_thold    = config.whisper_logprob_thold;
 
