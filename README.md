@@ -231,7 +231,8 @@ ws.send(float_samples.tobytes())
 |---|---|
 | `ready` | Session configured successfully |
 | `transcription` | Partial (`is_final: false`) or final (`is_final: true`) result |
-| `warning` | Non-fatal issue (e.g. `code: "buffer_full"` when the 20s buffer is saturated) |
+| `warning` | Non-fatal issue. `code: "buffer_full"` when the 20s buffer is saturated — sent every 10 dropped chunks while it stays saturated (field `dropped_chunks`, resets to 0 each time the buffer drains and a new saturation episode starts) |
+| `flow_control` | `action: "pause"` when the buffer hits the 20s high-water mark and the server starts dropping incoming audio; `action: "resume"` once it drains back below the 10s low-water mark. Informational — the server keeps dropping audio at the high-water mark regardless of whether the client honors this signal |
 | `error` | Fatal session error — connection closes after `AUTH_FAILED`, `AUTH_REQUIRED` |
 
 ### End of stream
