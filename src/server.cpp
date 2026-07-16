@@ -152,6 +152,9 @@ ServerConfig configFromEnv() {
     if (auto v = env("WHISPER_TEMPERATURE_INC"); !v.empty())
         cfg.whisper_temperature_inc = std::stof(v);
 
+    if (auto v = env("WHISPER_TEMPERATURE_INC_HTTP"); !v.empty())
+        cfg.whisper_temperature_inc_http = std::stof(v);
+
     if (auto v = env("WHISPER_NO_SPEECH_THOLD"); !v.empty())
         cfg.whisper_no_speech_thold = std::stof(v);
 
@@ -166,6 +169,9 @@ ServerConfig configFromEnv() {
 
     if (auto v = env("MAX_UPLOAD_BYTES"); !v.empty())
     cfg.max_upload_bytes = static_cast<size_t>(std::stoull(v));
+
+    if (auto v = env("MAX_AUDIO_DURATION_SEC"); !v.empty())
+        cfg.max_audio_duration_sec = std::stoi(v);
 
     return cfg;
 }
@@ -185,11 +191,13 @@ void printUsage(const char* binary) {
               << " [--max-concurrent-inference N] [--model-cache-ttl N]"
               << " [--whisper-initial-prompt TEXT] [--session-timeout-sec N] [--handshake-timeout-sec N] [--shutdown-timeout-sec N]"
               << " [--flush-min-new-audio-ms N]"
+              << " [--whisper-temperature-inc-http F]"
               << " [--vad-model PATH] [--vad-threshold F] [--vad-min-speech-ms N]"
               << " [--vad-min-silence-ms N] [--vad-max-speech-s F] [--vad-speech-pad-ms N]"
               << " [--vad-samples-overlap F]"
               << " [--env-file path]"
-              << " [--max-upload-bytes N]" << std::endl;
+              << " [--max-upload-bytes N]"
+              << " [--max-audio-duration-sec N]" << std::endl;
     std::cout << "  --vad-model PATH           VAD (Silero) model file (default: third_party/whisper.cpp/models/ggml-silero-v5.1.2.bin)\n"
               << "  --vad-threshold F          VAD speech probability threshold (default: 0.5)\n"
               << "  --vad-min-speech-ms N      min speech segment duration (default: 250)\n"
@@ -204,10 +212,10 @@ void printUsage(const char* binary) {
     std::cout << "  TRUSTED_PROXY_HOSTS, TRUSTED_PROXY_REFRESH_SEC," << std::endl;
     std::cout << "  WHISPER_BEAM_SIZE, WHISPER_THREADS, MAX_CONCURRENT_INFERENCE," << std::endl;
     std::cout << "  MODEL_CACHE_TTL, WHISPER_INITIAL_PROMPT, SESSION_TIMEOUT_SEC, HANDSHAKE_TIMEOUT_SEC, SHUTDOWN_TIMEOUT_SEC," << std::endl;
-    std::cout << "  WHISPER_TEMPERATURE, WHISPER_TEMPERATURE_INC," << std::endl;
+    std::cout << "  WHISPER_TEMPERATURE, WHISPER_TEMPERATURE_INC, WHISPER_TEMPERATURE_INC_HTTP," << std::endl;
     std::cout << "  WHISPER_NO_SPEECH_THOLD, WHISPER_LOGPROB_THOLD" << std::endl;
     std::cout << "  FLUSH_MIN_NEW_AUDIO_MS" << std::endl;
-    std::cout << "  MAX_UPLOAD_BYTES" << std::endl;
+    std::cout << "  MAX_UPLOAD_BYTES, MAX_AUDIO_DURATION_SEC" << std::endl;
     std::cout << "CLI arguments override environment variables." << std::endl;
 }
 
@@ -280,6 +288,8 @@ ServerConfig parseArgs(int argc, char* argv[]) {
             config.whisper_temperature = std::stof(argv[++i]);
         } else if (arg == "--whisper-temperature-inc" && i + 1 < argc) {
             config.whisper_temperature_inc = std::stof(argv[++i]);
+        } else if (arg == "--whisper-temperature-inc-http" && i + 1 < argc) {
+            config.whisper_temperature_inc_http = std::stof(argv[++i]);
         } else if (arg == "--whisper-no-speech-thold" && i + 1 < argc) {
             config.whisper_no_speech_thold = std::stof(argv[++i]);
         } else if (arg == "--whisper-logprob-thold" && i + 1 < argc) {
@@ -308,6 +318,8 @@ ServerConfig parseArgs(int argc, char* argv[]) {
         
         } else if (arg == "--max-upload-bytes" && i + 1 < argc) {
             config.max_upload_bytes = static_cast<size_t>(std::stoull(argv[++i]));
+        } else if (arg == "--max-audio-duration-sec" && i + 1 < argc) {
+            config.max_audio_duration_sec = std::stoi(argv[++i]);
         } else {
             Log::error("Unknown argument: " + arg);
             printUsage(argv[0]);

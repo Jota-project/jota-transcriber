@@ -75,6 +75,12 @@ static std::string makeMultipartBodyWithFormat(const std::string& boundary,
     return body;
 }
 
+TEST(ServerConfigDefaults, HttpHardeningFieldsHaveExpectedDefaults) {
+    ServerConfig cfg;
+    EXPECT_EQ(cfg.max_audio_duration_sec, 600);
+    EXPECT_FLOAT_EQ(cfg.whisper_temperature_inc_http, 0.2f);
+}
+
 class HandleTranscribeTest : public ::testing::Test {
 protected:
     ServerConfig config;
