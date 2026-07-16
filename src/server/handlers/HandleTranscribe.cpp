@@ -137,6 +137,16 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
         return;
     }
 
+    // ── 4b. Duration cap (decoded PCM duration, independent of upload bytes) ──
+    const double audio_duration_sec = static_cast<double>(pcm.size()) / 16000.0;
+    if (audio_duration_sec > config.max_audio_duration_sec) {
+        send(makeError(http::status::payload_too_large,
+                       "Decoded audio exceeds maximum duration of " +
+                       std::to_string(config.max_audio_duration_sec) + " seconds",
+                       "payload_too_large_error", ver));
+        return;
+    }
+
     // ── 6. Acquire model context ──────────────────────────────────────────────
     std::optional<ModelCache::Guard> model_guard;
     try {

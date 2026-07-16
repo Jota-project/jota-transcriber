@@ -494,3 +494,22 @@ TEST_F(HandleTranscribeTest, NullAuthManagerWithNoAuthConfigIsAccepted) {
 
     EXPECT_EQ(res.result(), http::status::ok);
 }
+
+TEST_F(HandleTranscribeTest, Returns413WhenDecodedAudioExceedsMaxDuration) {
+    config.max_audio_duration_sec = 1; // 1 second cap
+
+    auto audio = makeSilentWav(2.0f); // decodes to 2 s of PCM > cap
+    auto body  = makeMultipartBody("bnd", audio, "en");
+
+    http::request<http::string_body> req{http::verb::post, "/v1/audio/transcriptions", 11};
+    req.set(http::field::content_type, "multipart/form-data; boundary=bnd");
+    req.body() = body;
+    req.prepare_payload();
+
+    http::response<http::string_body> res;
+    HandleTranscribe::handle(req, [&](http::response<http::string_body> r) { res = std::move(r); },
+                             config, no_auth);
+
+    EXPECT_EQ(res.result(), http::status::payload_too_large);
+    EXPECT_NE(res.body().find("duration"), std::string::npos);
+}
