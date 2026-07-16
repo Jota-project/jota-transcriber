@@ -1,3 +1,10 @@
+## [1.4.1](https://github.com/Jota-project/jota-transcriber/compare/v1.4.0...v1.4.1) (2026-07-16)
+
+
+### Bug Fixes
+
+* HandshakeWatchdog kills long-running HTTP requests, not just idle handshakes ([#83](https://github.com/Jota-project/jota-transcriber/issues/83)) ([38adc8e](https://github.com/Jota-project/jota-transcriber/commit/38adc8e22ac167ef078609e494eb24a25232c511)), closes [#81](https://github.com/Jota-project/jota-transcriber/issues/81)
+
 # [1.4.0](https://github.com/Jota-project/jota-transcriber/compare/v1.3.4...v1.4.0) (2026-07-16)
 
 
