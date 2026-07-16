@@ -1,3 +1,10 @@
+# [1.4.0](https://github.com/Jota-project/jota-transcriber/compare/v1.3.4...v1.4.0) (2026-07-16)
+
+
+### Features
+
+* WebSocket backpressure — flow_control pause/resume + dropped_chunks warning ([#82](https://github.com/Jota-project/jota-transcriber/issues/82)) ([b462b73](https://github.com/Jota-project/jota-transcriber/commit/b462b7373bc95bea5e05dce400094e1455bda167)), closes [hi#water](https://github.com/hi/issues/water) [hi#water](https://github.com/hi/issues/water) [hi#water](https://github.com/hi/issues/water) [hi#water](https://github.com/hi/issues/water) [hi#water](https://github.com/hi/issues/water)
+
 ## [1.3.4](https://github.com/Jota-project/jota-transcriber/compare/v1.3.3...v1.3.4) (2026-07-15)
 
 
