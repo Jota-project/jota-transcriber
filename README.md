@@ -22,7 +22,7 @@ High-performance real-time audio transcription microservice built with C++17 and
 - Authentication: static token or external API with in-memory cache
 - Per-IP and global connection limits, with an opt-in DNS-based exemption for a trusted gateway proxy
 - Non-blocking inference — GPU saturation skips a cycle instead of blocking
-- Audio buffer high-water mark (20s) with client-side warning
+- Audio buffer high-water mark (20s) with `flow_control` pause/resume and `dropped_chunks` warnings
 - Hallucination guard against Whisper decoder loops
 - Prometheus metrics at `/metrics`, health check at `/health`, readiness at `/ready`
 - Docker with NVIDIA GPU support

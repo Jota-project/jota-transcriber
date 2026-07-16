@@ -223,7 +223,6 @@ private:
             Log::warn("Audio buffer full, entrando en pausa de flujo", session_id_);
             sendMessage({{"type", "flow_control"}, {"action", "pause"}});
         }
-        constexpr size_t WARNING_INTERVAL_CHUNKS = 10;
         if (overflow && current_dropped % WARNING_INTERVAL_CHUNKS == 0) {
             sendMessage({
                 {"type", "warning"},
@@ -395,6 +394,8 @@ private:
                 configured_ = true;
                 last_transcribed_size_ = 0;
                 capacity_degraded_ = false;
+                buffer_overflowed_ = false;
+                dropped_chunks_ = 0;
                 full_transcription_    = "";
                 raw_transcription_     = "";
                 last_audio_time_ = std::chrono::steady_clock::now();
@@ -502,6 +503,7 @@ private:
     std::unique_ptr<StreamingWhisperEngine> engine_;
     std::string session_id_;
     bool configured_;
+    static constexpr size_t WARNING_INTERVAL_CHUNKS = 10; // how often a dropped_chunks warning is re-sent during a saturation episode
     bool buffer_overflowed_; // true while a saturation episode (HWM..LWM hysteresis) is active
     size_t dropped_chunks_;  // chunks dropped in the CURRENT episode; resets to 0 when it ends
     bool capacity_degraded_; // true while this session's own inference cycles are being skipped (GPU saturated)
@@ -644,7 +646,6 @@ private:
             // episode is over: report any drops not yet covered by a periodic warning,
             // tell the client it can resume, then reset for the next episode.
             constexpr size_t LOW_WATER_MARK = 16000 * 10;
-            constexpr size_t WARNING_INTERVAL_CHUNKS = 10;
             if (buffer_overflowed_ && engine_->getBufferSize() < LOW_WATER_MARK) {
                 // Snapshot while still locked — dropped_chunks_ is state_mutex_-protected
                 // state written by processAudioChunk() on the WS receive thread, so it
