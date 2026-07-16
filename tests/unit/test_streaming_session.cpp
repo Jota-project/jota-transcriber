@@ -15,6 +15,8 @@
 #include <atomic>
 #include <cstring>
 #include <future>
+#include <fstream>
+#include <filesystem>
 
 static std::vector<unsigned char> toBytes(const std::vector<float>& samples) {
     std::vector<unsigned char> bytes(samples.size() * sizeof(float));
@@ -104,7 +106,13 @@ protected:
         }
     }
 
-    uint16_t startServer(bool require_auth = false, int session_timeout_sec = 30) {
+    // model_path_override: empty string (the default) uses the fast structural-only
+    // stub model (for-tests-ggml-tiny.bin, zero real tensors — fine for every test
+    // that only checks protocol/session behavior). Tests that need Whisper to
+    // actually produce non-empty segments (e.g. real buffer draining via committed
+    // text) must pass a real model path explicitly.
+    uint16_t startServer(bool require_auth = false, int session_timeout_sec = 30,
+                          const std::string& model_path_override = "") {
         tcp::endpoint endpoint(net::ip::make_address("127.0.0.1"), 0);
         acceptor_ = std::make_unique<tcp::acceptor>(ioc_, endpoint);
         uint16_t port = acceptor_->local_endpoint().port();
@@ -116,24 +124,27 @@ protected:
         }
         auto auth_manager = std::make_shared<AuthManager>(auth_cfg);
 
-        doAccept(auth_manager, session_timeout_sec);
+        doAccept(auth_manager, session_timeout_sec, model_path_override);
 
         server_thread_ = std::thread([this]() { ioc_.run(); });
         return port;
     }
 
-    void doAccept(std::shared_ptr<AuthManager> auth_manager, int session_timeout_sec = 30) {
+    void doAccept(std::shared_ptr<AuthManager> auth_manager, int session_timeout_sec = 30,
+                  const std::string& model_path_override = "") {
         acceptor_->async_accept(
-            [this, auth_manager, session_timeout_sec](boost::system::error_code ec, tcp::socket socket) {
+            [this, auth_manager, session_timeout_sec, model_path_override](boost::system::error_code ec, tcp::socket socket) {
                 if (!ec) {
                     session_threads_.emplace_back(
-                        [this, s = std::move(socket), auth_manager, session_timeout_sec]() mutable {
+                        [this, s = std::move(socket), auth_manager, session_timeout_sec, model_path_override]() mutable {
                             try {
                                 boost::beast::flat_buffer buffer;
                                 boost::beast::http::request<boost::beast::http::string_body> req;
                                 boost::beast::http::read(s, buffer, req);
 
-                                std::string model_path = std::string(PROJECT_ROOT) + "/third_party/whisper.cpp/models/for-tests-ggml-tiny.bin";
+                                std::string model_path = !model_path_override.empty()
+                                    ? model_path_override
+                                    : std::string(PROJECT_ROOT) + "/third_party/whisper.cpp/models/for-tests-ggml-tiny.bin";
 
                                 websocket::stream<tcp::socket> ws(std::move(s));
                                 auto session = std::make_shared<StreamingSession<websocket::stream<tcp::socket>>>(
@@ -145,7 +156,7 @@ protected:
                                 session->run(req);
                             } catch (...) {}
                         });
-                    doAccept(auth_manager, session_timeout_sec);
+                    doAccept(auth_manager, session_timeout_sec, model_path_override);
                 }
             });
     }
@@ -392,6 +403,122 @@ TEST_F(StreamingSessionTest, FlowControlPauseAndPeriodicWarningOnSustainedOverfl
     auto warn2 = client.recvJson();
     EXPECT_EQ(warn2["type"], "warning");
     EXPECT_EQ(warn2["dropped_chunks"], 20);
+}
+
+// Minimal PCM16 mono WAV loader (jfk.wav is 16 kHz mono 16-bit). Finds the
+// "data" chunk and converts int16 -> float32 in [-1, 1].
+static std::vector<float> loadWavMono16k(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return {};
+    std::vector<char> bytes((std::istreambuf_iterator<char>(f)),
+                             std::istreambuf_iterator<char>());
+    size_t i = 12;
+    while (i + 8 <= bytes.size()) {
+        uint32_t sz = static_cast<uint8_t>(bytes[i+4]) |
+                      (static_cast<uint8_t>(bytes[i+5]) << 8) |
+                      (static_cast<uint8_t>(bytes[i+6]) << 16) |
+                      (static_cast<uint8_t>(bytes[i+7]) << 24);
+        if (bytes[i]=='d' && bytes[i+1]=='a' && bytes[i+2]=='t' && bytes[i+3]=='a') {
+            std::vector<float> out;
+            size_t start = i + 8;
+            size_t end = std::min(bytes.size(), start + sz);
+            for (size_t p = start; p + 1 < end; p += 2) {
+                int16_t s = static_cast<uint8_t>(bytes[p]) |
+                            (static_cast<int16_t>(bytes[p+1]) << 8);
+                out.push_back(s / 32768.0f);
+            }
+            return out;
+        }
+        i += 8 + sz + (sz & 1);
+    }
+    return {};
+}
+
+TEST_F(StreamingSessionTest, FlowControlResumeAfterRealDrainAndCounterResetsNextEpisode) {
+    const std::string wav = std::string(PROJECT_ROOT) + "/third_party/whisper.cpp/samples/jfk.wav";
+    if (!std::filesystem::exists(wav)) {
+        GTEST_SKIP() << "jfk.wav not found";
+    }
+    // This test needs Whisper to actually commit real segments so the buffer
+    // drains — the fixture's default model (for-tests-ggml-tiny.bin) has zero
+    // real tensors and always returns 0 segments regardless of input (see
+    // CLAUDE.md: tests requiring real transcription need a real model file).
+    const std::string real_model = std::string(PROJECT_ROOT) + "/third_party/whisper.cpp/models/ggml-base.bin";
+    if (!std::filesystem::exists(real_model)) {
+        GTEST_SKIP() << "Real model not found: " << real_model;
+    }
+    std::vector<float> speech = loadWavMono16k(wav);
+    ASSERT_FALSE(speech.empty());
+
+    auto port = startServer(false, 30, real_model);
+    auto client = connect(port);
+
+    client.sendJson({{"type", "config"}, {"language", "en"}});
+    EXPECT_EQ(client.recvJson()["type"], "ready");
+
+    // Two copies of jfk.wav (~22s) push the buffer past the 20s HWM without any
+    // individual chunk being dropped: each precheck compares against the buffer
+    // size BEFORE that chunk (0s, then ~11s — both under 20s).
+    client.sendBinary(toBytes(speech));
+    client.sendBinary(toBytes(speech));
+
+    // 12 filler chunks sent while the buffer already sits above HWM — all dropped.
+    std::vector<float> filler(3200, 0.0f); // 0.2s @16kHz
+    for (int i = 0; i < 12; ++i) {
+        client.sendBinary(toBytes(filler));
+    }
+
+    // Drain messages until flow_control:resume shows up. flushLoop's sliding window
+    // commits nearly the whole buffer (it keeps ~2s as overlap context), which lands
+    // comfortably below the 10s LWM on its first real pass over this ~22s buffer.
+    bool got_pause = false, got_resume = false;
+    int periodic_warning_dropped = -1;
+    int tail_warning_dropped = -1;
+    for (int i = 0; i < 200 && !got_resume; ++i) {
+        auto msg = client.recvJson();
+        if (msg["type"] == "flow_control" && msg["action"] == "pause") {
+            got_pause = true;
+        } else if (msg["type"] == "flow_control" && msg["action"] == "resume") {
+            got_resume = true;
+        } else if (msg["type"] == "warning" && msg["code"] == "buffer_full") {
+            int dropped = msg["dropped_chunks"].get<int>();
+            if (dropped % 10 == 0) periodic_warning_dropped = dropped;
+            else tail_warning_dropped = dropped;
+        }
+    }
+
+    ASSERT_TRUE(got_pause) << "Expected flow_control pause when buffer exceeded HWM";
+    ASSERT_TRUE(got_resume) << "Expected flow_control resume after buffer drained below LWM";
+    EXPECT_EQ(periodic_warning_dropped, 10);
+    EXPECT_EQ(tail_warning_dropped, 12);
+
+    // Second episode: push the buffer back over HWM with a few sub-1MB silence
+    // frames (each individually accepted since the precheck compares against the
+    // current, now-small, post-resume buffer — same reasoning as the initial HWM
+    // fill in Task 1's test, and same 1MB MAX_FRAME_BYTES constraint: a single
+    // 20s/1.28MB frame would be rejected outright by handleBinaryMessage()'s
+    // oversized-frame guard, so it must be split), then drop exactly 10 filler
+    // chunks. The periodic warning must report dropped_chunks == 10, not 22 —
+    // proving the counter reset.
+    constexpr size_t HWM = 16000 * 20;
+    constexpr size_t REFILL_CHUNK_SAMPLES = 16000 * 5; // 5s, 320000 bytes per frame — under the 1MB frame limit
+    for (size_t sent = 0; sent < HWM; sent += REFILL_CHUNK_SAMPLES) {
+        client.sendBinary(toBytes(std::vector<float>(REFILL_CHUNK_SAMPLES, 0.0f)));
+    }
+    for (int i = 0; i < 10; ++i) {
+        client.sendBinary(toBytes(filler));
+    }
+
+    json second_warning;
+    for (int i = 0; i < 50; ++i) {
+        auto msg = client.recvJson();
+        if (msg["type"] == "warning" && msg["code"] == "buffer_full") {
+            second_warning = msg;
+            break;
+        }
+    }
+    ASSERT_FALSE(second_warning.is_null()) << "Expected a warning in the second episode";
+    EXPECT_EQ(second_warning["dropped_chunks"], 10);
 }
 
 TEST_F(StreamingSessionTest, DoubleConfig) {

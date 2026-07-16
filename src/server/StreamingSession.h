@@ -640,11 +640,33 @@ private:
             auto res = engine_->transcribeSlidingWindow(false);
             // inf_guard releases the slot automatically on scope exit (including exceptions)
 
-            // If inference drained the buffer below HWM, reset the overflow flag so the
-            // next saturation episode triggers a new warning regardless of client audio timing.
-            constexpr size_t HIGH_WATER_MARK = 16000 * 20;
-            if (buffer_overflowed_ && engine_->getBufferSize() < HIGH_WATER_MARK) {
+            // If inference drained the buffer below the low-water mark, the saturation
+            // episode is over: report any drops not yet covered by a periodic warning,
+            // tell the client it can resume, then reset for the next episode.
+            constexpr size_t LOW_WATER_MARK = 16000 * 10;
+            constexpr size_t WARNING_INTERVAL_CHUNKS = 10;
+            if (buffer_overflowed_ && engine_->getBufferSize() < LOW_WATER_MARK) {
+                // Snapshot while still locked — dropped_chunks_ is state_mutex_-protected
+                // state written by processAudioChunk() on the WS receive thread, so it
+                // must not be read unlocked from this (flushLoop) thread below.
+                size_t dropped_snapshot = dropped_chunks_;
+                if (dropped_snapshot % WARNING_INTERVAL_CHUNKS != 0) {
+                    lock.unlock();
+                    sendMessage({
+                        {"type", "warning"},
+                        {"code", "buffer_full"},
+                        {"dropped_chunks", dropped_snapshot},
+                        {"message", "Audio buffer full, dropping incoming audio"}
+                    });
+                    lock.lock();
+                }
+                Log::info("flushLoop: saliendo de pausa de flujo (dropped=" +
+                          std::to_string(dropped_snapshot) + ")", session_id_);
+                lock.unlock();
+                sendMessage({{"type", "flow_control"}, {"action", "resume"}});
+                lock.lock();
                 buffer_overflowed_ = false;
+                dropped_chunks_ = 0;
             }
 
             // Hallucination guard: filter loops before updating state or sending to client.
