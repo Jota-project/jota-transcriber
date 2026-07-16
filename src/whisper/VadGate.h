@@ -40,6 +40,19 @@ public:
     VadGate(std::string model_path, whisper_vad_params params, int n_threads);
     ~VadGate();
 
+    /// Convenience factory: builds whisper_vad_params from primitive fields
+    /// (the same fields ServerConfig exposes as vad_*) and constructs a
+    /// VadGate. Avoids duplicating the whisper_vad_params mapping at every
+    /// call site (StreamingWhisperEngine, HandleTranscribe, ...).
+    static std::unique_ptr<VadGate> create(const std::string& model_path,
+                                           float threshold,
+                                           int min_speech_ms,
+                                           int min_silence_ms,
+                                           float max_speech_s,
+                                           int speech_pad_ms,
+                                           float samples_overlap,
+                                           int n_threads);
+
     VadGate(const VadGate&) = delete;
     VadGate& operator=(const VadGate&) = delete;
     VadGate(VadGate&&) = delete;

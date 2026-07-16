@@ -10,6 +10,24 @@ VadGate::VadGate(std::string model_path, whisper_vad_params params, int n_thread
 
 VadGate::~VadGate() = default;  // unique_ptr custom deleter frees the context
 
+std::unique_ptr<VadGate> VadGate::create(const std::string& model_path,
+                                          float threshold,
+                                          int min_speech_ms,
+                                          int min_silence_ms,
+                                          float max_speech_s,
+                                          int speech_pad_ms,
+                                          float samples_overlap,
+                                          int n_threads) {
+    whisper_vad_params p = whisper_vad_default_params();
+    p.threshold               = threshold;
+    p.min_speech_duration_ms  = min_speech_ms;
+    p.min_silence_duration_ms = min_silence_ms;
+    p.max_speech_duration_s   = max_speech_s;
+    p.speech_pad_ms           = speech_pad_ms;
+    p.samples_overlap         = samples_overlap;
+    return std::make_unique<VadGate>(model_path, p, n_threads);
+}
+
 int64_t VadGate::mapGatedToOriginalSamples(
         const std::vector<SegmentMapping>& mapping,
         int64_t gated_samples,

@@ -2,6 +2,7 @@
 
 #include "whisper/VadGate.h"
 
+#include <cfloat>
 #include <filesystem>
 #include <whisper.h>
 
@@ -19,6 +20,18 @@ static VadGate makeGate() {
     p.min_silence_duration_ms = 2000;
     p.speech_pad_ms           = 400;
     return VadGate(VAD_MODEL_PATH, p, 4);
+}
+
+TEST(VadGateBehavior, FactoryCreatedGateDetectsPureSilenceAsNoSpeech) {
+    if (!std::filesystem::exists(VAD_MODEL_PATH)) {
+        GTEST_SKIP() << "VAD model not found: " << VAD_MODEL_PATH;
+    }
+    auto gate = VadGate::create(VAD_MODEL_PATH, 0.5f, 250, 2000, FLT_MAX, 400, 0.1f, 4);
+    ASSERT_NE(gate, nullptr);
+    std::vector<float> silence(16000 * 4, 0.0f);  // 4 s of zeros
+    auto result = gate->gate(silence);
+    EXPECT_FALSE(result.had_speech);
+    EXPECT_TRUE(result.samples.empty());
 }
 
 TEST(VadGateBehavior, EmptyInputHasNoSpeech) {
