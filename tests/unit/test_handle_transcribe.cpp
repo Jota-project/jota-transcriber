@@ -6,8 +6,10 @@
 #include "whisper/ModelCache.h"
 #include "whisper/InferenceLimiter.h"
 #include <filesystem>
+#include <fstream>
 #include <cstring>
 #include <cstdint>
+#include <nlohmann/json.hpp>
 
 #ifndef PROJECT_ROOT
 #define PROJECT_ROOT "."
@@ -15,6 +17,8 @@
 
 const std::string TRANSCRIBE_MODEL =
     std::string(PROJECT_ROOT) + "/third_party/whisper.cpp/models/ggml-small.bin";
+const std::string VAD_MODEL_PATH =
+    std::string(PROJECT_ROOT) + "/third_party/whisper.cpp/models/ggml-silero-v5.1.2.bin";
 
 namespace http = boost::beast::http;
 
@@ -92,6 +96,10 @@ protected:
         config.model_path      = TRANSCRIBE_MODEL;
         config.whisper_threads = 2;
         config.whisper_beam_size = 1;
+        // VAD is off by default here — these tests are about auth, parsing,
+        // formats, limits, etc., not VAD. Tests that specifically exercise
+        // VAD gating set config.vad_model_path explicitly (see below).
+        config.vad_model_path  = "";
         ModelCache::instance().configure(-1); // keep forever during tests
         ApiAuthConfig auth_cfg;               // no auth token → auth disabled
         no_auth = std::make_shared<AuthManager>(auth_cfg);
@@ -295,6 +303,45 @@ static std::string makeMultipartBodyWithExtraField(const std::string& boundary,
         field_value + "\r\n";
     body += "--" + boundary + "--\r\n";
     return body;
+}
+
+// Reads third_party/whisper.cpp/samples/jfk.wav (16kHz mono 16-bit PCM, ~11s
+// of real speech) and prepends pad_sec of silence, re-wrapped in a fresh WAV
+// header. Used to verify VAD-trimmed timestamps get translated back to the
+// ORIGINAL (padded) timeline in the verbose_json response.
+static std::vector<uint8_t> makePaddedJfkWav(float pad_sec) {
+    std::string jfk_path = std::string(PROJECT_ROOT) + "/third_party/whisper.cpp/samples/jfk.wav";
+    std::ifstream f(jfk_path, std::ios::binary);
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)),
+                                std::istreambuf_iterator<char>());
+
+    size_t i = 12, data_off = 0, data_sz = 0;
+    while (i + 8 <= bytes.size()) {
+        uint32_t sz = static_cast<uint32_t>(bytes[i+4]) | (static_cast<uint32_t>(bytes[i+5]) << 8) |
+                      (static_cast<uint32_t>(bytes[i+6]) << 16) | (static_cast<uint32_t>(bytes[i+7]) << 24);
+        if (bytes[i]=='d' && bytes[i+1]=='a' && bytes[i+2]=='t' && bytes[i+3]=='a') {
+            data_off = i + 8;
+            data_sz  = sz;
+            break;
+        }
+        i += 8 + sz + (sz % 2);
+    }
+
+    uint32_t pad_bytes = static_cast<uint32_t>(pad_sec * 16000) * 2;
+    uint32_t new_data_bytes = pad_bytes + static_cast<uint32_t>(data_sz);
+
+    struct __attribute__((packed)) Hdr {
+        char     riff[4]={'R','I','F','F'}; uint32_t chunk_sz;
+        char     wave[4]={'W','A','V','E'}; char fmt[4]={'f','m','t',' '};
+        uint32_t sub1=16; uint16_t fmt_=1,ch=1; uint32_t sr_,br_; uint16_t ba=2,bps=16;
+        char     data[4]={'d','a','t','a'}; uint32_t sub2;
+    };
+    Hdr h; h.chunk_sz = 36 + new_data_bytes; h.sr_ = 16000; h.br_ = 16000*2; h.sub2 = new_data_bytes;
+
+    std::vector<uint8_t> out(sizeof(Hdr) + new_data_bytes, 0);
+    memcpy(out.data(), &h, sizeof(Hdr));
+    memcpy(out.data() + sizeof(Hdr) + pad_bytes, bytes.data() + data_off, data_sz);
+    return out;
 }
 
 TEST_F(HandleTranscribeTest, TemperatureOutOfRangeUpperReturnsBadRequest) {
@@ -512,4 +559,85 @@ TEST_F(HandleTranscribeTest, Returns413WhenDecodedAudioExceedsMaxDuration) {
 
     EXPECT_EQ(res.result(), http::status::payload_too_large);
     EXPECT_NE(res.body().find("duration"), std::string::npos);
+}
+
+TEST_F(HandleTranscribeTest, SilentAudioSkipsInferenceLimiterWhenVadEnabled) {
+    if (!std::filesystem::exists(VAD_MODEL_PATH)) {
+        GTEST_SKIP() << "VAD model not found: " << VAD_MODEL_PATH;
+    }
+    config.vad_model_path = VAD_MODEL_PATH;
+
+    // Fill the only inference slot. If VAD gating correctly short-circuits
+    // before acquiring it, silent audio still returns 200 — if gating is
+    // missing (or acquires the slot first), this returns 503 instead.
+    InferenceLimiter::instance().setMaxConcurrency(1);
+    InferenceLimiter::instance().acquire();
+
+    auto audio = makeSilentWav(0.5f);
+    auto body  = makeMultipartBody("bnd", audio, "en");
+
+    http::request<http::string_body> req{http::verb::post, "/v1/audio/transcriptions", 11};
+    req.set(http::field::content_type, "multipart/form-data; boundary=bnd");
+    req.body() = body;
+    req.prepare_payload();
+
+    http::response<http::string_body> res;
+    HandleTranscribe::handle(req, [&](http::response<http::string_body> r) { res = std::move(r); },
+                             config, no_auth);
+
+    InferenceLimiter::instance().release();
+    InferenceLimiter::instance().setMaxConcurrency(100);
+
+    EXPECT_EQ(res.result(), http::status::ok);
+    EXPECT_NE(res.body().find("\"text\":\"\""), std::string::npos);
+}
+
+TEST_F(HandleTranscribeTest, SilentAudioWithVadReturnsEmptySegmentsVerboseJson) {
+    if (!std::filesystem::exists(VAD_MODEL_PATH)) {
+        GTEST_SKIP() << "VAD model not found: " << VAD_MODEL_PATH;
+    }
+    config.vad_model_path = VAD_MODEL_PATH;
+
+    auto audio = makeSilentWav(0.5f);
+    auto body  = makeMultipartBodyWithFormat("bnd", audio, "verbose_json", "en");
+
+    http::request<http::string_body> req{http::verb::post, "/v1/audio/transcriptions", 11};
+    req.set(http::field::content_type, "multipart/form-data; boundary=bnd");
+    req.body() = body;
+    req.prepare_payload();
+
+    http::response<http::string_body> res;
+    HandleTranscribe::handle(req, [&](http::response<http::string_body> r) { res = std::move(r); },
+                             config, no_auth);
+
+    EXPECT_EQ(res.result(), http::status::ok);
+    EXPECT_NE(res.body().find("\"segments\":[]"), std::string::npos);
+    EXPECT_NE(res.body().find("\"duration\":0"), std::string::npos);
+}
+
+TEST_F(HandleTranscribeTest, VadEnabledTranslatesVerboseJsonTimestampsToOriginalTimeline) {
+    if (!std::filesystem::exists(VAD_MODEL_PATH)) {
+        GTEST_SKIP() << "VAD model not found: " << VAD_MODEL_PATH;
+    }
+    config.vad_model_path = VAD_MODEL_PATH;
+
+    auto audio = makePaddedJfkWav(3.0f); // 3s silence + ~11s real speech
+    auto body  = makeMultipartBodyWithFormat("bnd", audio, "verbose_json", "en");
+
+    http::request<http::string_body> req{http::verb::post, "/v1/audio/transcriptions", 11};
+    req.set(http::field::content_type, "multipart/form-data; boundary=bnd");
+    req.body() = body;
+    req.prepare_payload();
+
+    http::response<http::string_body> res;
+    HandleTranscribe::handle(req, [&](http::response<http::string_body> r) { res = std::move(r); },
+                             config, no_auth);
+
+    ASSERT_EQ(res.result(), http::status::ok);
+    auto j = nlohmann::json::parse(res.body());
+    ASSERT_FALSE(j["segments"].empty());
+    // The 3s of leading silence must show up in the reported timestamps —
+    // VAD trims it internally before decoding, but the response must report
+    // times on the ORIGINAL (padded) timeline, not the trimmed one.
+    EXPECT_GT(j["segments"][0]["start"].get<float>(), 1.0f);
 }

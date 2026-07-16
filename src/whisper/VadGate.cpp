@@ -32,7 +32,7 @@ int64_t VadGate::mapGatedToOriginalSamples(
         const std::vector<SegmentMapping>& mapping,
         int64_t gated_samples,
         int64_t original_total_samples) {
-    if (gated_samples <= 0 || mapping.empty()) return 0;
+    if (gated_samples < 0 || mapping.empty()) return 0;
 
     for (size_t i = 0; i < mapping.size(); ++i) {
         const auto& seg = mapping[i];

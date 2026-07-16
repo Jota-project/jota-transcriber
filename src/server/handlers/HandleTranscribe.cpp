@@ -5,11 +5,13 @@
 #include "audio/AudioDecoder.h"
 #include "whisper/ModelCache.h"
 #include "whisper/InferenceLimiter.h"
+#include "whisper/VadGate.h"
 #include "log/Log.h"
 #include <whisper.h>
 #include <nlohmann/json.hpp>
 #include <boost/beast/version.hpp>
 #include <optional>
+#include <memory>
 #include <unordered_set>
 #include <sstream>
 #include <iomanip>
@@ -147,28 +149,8 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
         return;
     }
 
-    // ── 6. Acquire model context ──────────────────────────────────────────────
-    std::optional<ModelCache::Guard> model_guard;
-    try {
-        model_guard.emplace(config.model_path);
-    } catch (const std::exception& e) {
-        Log::error(std::string("HandleTranscribe: model load failed: ") + e.what());
-        send(makeError(http::status::internal_server_error,
-                       "Failed to load model", "server_error", ver));
-        return;
-    }
-    whisper_context* ctx = model_guard->ctx();
-
-    // ── 7. Transcribe ─────────────────────────────────────────────────────────
-    // Declared before guard so they're accessible when formatting the response below.
-    struct Segment {
-        float       start;
-        float       end;
-        std::string text;
-        float       no_speech_prob;
-    };
-    std::vector<Segment> segments;
-
+    // ── 4c. Request fields needed on every path, including the VAD no-speech
+    //        short-circuit below (verbose_json reports them regardless). ─────
     std::string language = "auto";
     if (parts.count("language")) {
         language.assign(parts.at("language").data.begin(),
@@ -181,19 +163,84 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
                     parts.at("task").data.end());
     }
 
-    // ── 7. Acquire inference slot (atomic try — no TOCTOU) ────────────────────
-    // Must be acquired AFTER model_guard so it outlives the inference block.
-    InferenceLimiter::TryGuard inf_guard;
-    if (!inf_guard.acquired()) {
-        // model_guard releases the model automatically on scope exit.
-        send(makeError(http::status::service_unavailable,
-                       "Server is at maximum inference capacity, try again later",
-                       "server_error", ver));
-        return;
+    // Validated up front so an invalid value always 400s, even when VAD
+    // later determines there's no speech to decode at all.
+    std::optional<float> temperature_override;
+    if (parts.count("temperature")) {
+        try {
+            std::string t(parts.at("temperature").data.begin(),
+                          parts.at("temperature").data.end());
+            float val = std::stof(t);
+            if (val < 0.0f || val > 1.0f) {
+                send(makeError(http::status::bad_request,
+                               "temperature must be between 0.0 and 1.0",
+                               "invalid_request_error", ver));
+                return;
+            }
+            temperature_override = val;
+        } catch (...) { /* ignore invalid value, use default */ }
     }
 
+    // ── 4d. VAD silence gating — mirrors the WS path; no-op when unconfigured ─
+    std::unique_ptr<VadGate> vad_gate;
+    std::vector<float> gated_samples;
+    const std::vector<float>* decode_ptr = &pcm;
+    bool had_speech = true;
+    if (!config.vad_model_path.empty()) {
+        vad_gate = VadGate::create(config.vad_model_path, config.vad_threshold,
+                                   config.vad_min_speech_ms, config.vad_min_silence_ms,
+                                   config.vad_max_speech_s, config.vad_speech_pad_ms,
+                                   config.vad_samples_overlap, config.whisper_threads);
+        VadGate::GatedResult gated;
+        try {
+            gated = vad_gate->gate(pcm);
+        } catch (const std::exception& e) {
+            Log::error(std::string("HandleTranscribe: VAD gating failed: ") + e.what());
+            send(makeError(http::status::internal_server_error,
+                           "VAD gating failed", "server_error", ver));
+            return;
+        }
+        had_speech = gated.had_speech;
+        if (had_speech) {
+            gated_samples = std::move(gated.samples);
+            decode_ptr = &gated_samples;
+        }
+    }
+    const std::vector<float>& decode_buf = *decode_ptr;
+
+    // ── 7. Transcribe (skipped entirely when VAD found nothing but silence) ──
+    struct Segment {
+        float       start;
+        float       end;
+        std::string text;
+        float       no_speech_prob;
+    };
+    std::vector<Segment> segments;
     std::string text;
-    {
+
+    if (had_speech) {
+        // Acquire model context
+        std::optional<ModelCache::Guard> model_guard;
+        try {
+            model_guard.emplace(config.model_path);
+        } catch (const std::exception& e) {
+            Log::error(std::string("HandleTranscribe: model load failed: ") + e.what());
+            send(makeError(http::status::internal_server_error,
+                           "Failed to load model", "server_error", ver));
+            return;
+        }
+        whisper_context* ctx = model_guard->ctx();
+
+        // Acquire inference slot (atomic try — no TOCTOU).
+        // Must be acquired AFTER model_guard so it outlives the inference block.
+        InferenceLimiter::TryGuard inf_guard;
+        if (!inf_guard.acquired()) {
+            // model_guard releases the model automatically on scope exit.
+            send(makeError(http::status::service_unavailable,
+                           "Server is at maximum inference capacity, try again later",
+                           "server_error", ver));
+            return;
+        }
 
         whisper_state* state = whisper_init_state(ctx);
         if (!state) {
@@ -202,7 +249,6 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
             return;
         }
 
-        // Determine language (already extracted above)
         whisper_full_params params = (config.whisper_beam_size > 1)
             ? whisper_full_default_params(WHISPER_SAMPLING_BEAM_SEARCH)
             : whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
@@ -217,7 +263,7 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
         params.no_context       = false; // context helps for full-file transcription
         params.suppress_blank   = true;
         params.suppress_nst     = true;
-        params.temperature      = config.whisper_temperature;
+        params.temperature      = temperature_override.value_or(config.whisper_temperature);
         params.temperature_inc  = config.whisper_temperature_inc;
         params.no_speech_thold  = config.whisper_no_speech_thold;
         params.logprob_thold    = config.whisper_logprob_thold;
@@ -225,7 +271,6 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
         if (config.whisper_beam_size > 1)
             params.beam_search.beam_size = config.whisper_beam_size;
 
-        // Request-level overrides
         std::string prompt;
         if (parts.count("prompt")) {
             prompt.assign(parts.at("prompt").data.begin(), parts.at("prompt").data.end());
@@ -234,25 +279,9 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
             params.initial_prompt = config.whisper_initial_prompt.c_str();
         }
 
-        if (parts.count("temperature")) {
-            try {
-                std::string t(parts.at("temperature").data.begin(),
-                              parts.at("temperature").data.end());
-                float val = std::stof(t);
-                if (val < 0.0f || val > 1.0f) {
-                    whisper_free_state(state);
-                    send(makeError(http::status::bad_request,
-                                   "temperature must be between 0.0 and 1.0",
-                                   "invalid_request_error", ver));
-                    return;
-                }
-                params.temperature = val;
-            } catch (...) { /* ignore invalid value, use default */ }
-        }
-
         int rc = whisper_full_with_state(
             ctx, state, params,
-            pcm.data(), static_cast<int>(pcm.size()));
+            decode_buf.data(), static_cast<int>(decode_buf.size()));
 
         if (rc != 0) {
             whisper_free_state(state);
@@ -270,7 +299,17 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
                 int64_t t0  = whisper_full_get_segment_t0_from_state(state, i);
                 int64_t t1  = whisper_full_get_segment_t1_from_state(state, i);
                 float   nsp = whisper_full_get_segment_no_speech_prob_from_state(state, i);
-                segments.push_back({t0 / 100.0f, t1 / 100.0f, seg, nsp});
+                float start_sec, end_sec;
+                if (vad_gate) {
+                    // t0/t1 are in the GATED (trimmed) timeline — translate
+                    // back to the timeline of the audio the client uploaded.
+                    start_sec = static_cast<float>(vad_gate->toOriginalSamples(t0)) / 16000.0f;
+                    end_sec   = static_cast<float>(vad_gate->toOriginalSamples(t1)) / 16000.0f;
+                } else {
+                    start_sec = t0 / 100.0f;
+                    end_sec   = t1 / 100.0f;
+                }
+                segments.push_back({start_sec, end_sec, seg, nsp});
             }
             text += seg;
         }
@@ -278,8 +317,9 @@ void HandleTranscribe::handle(const http::request<http::string_body>& req,
         whisper_free_state(state);
     }
 
-    Log::info("HandleTranscribe: transcribed " + std::to_string(pcm.size()) +
-            " samples → " + std::to_string(text.size()) + " chars"
+    Log::info("HandleTranscribe: decoded " + std::to_string(pcm.size()) +
+            " samples" + (had_speech ? "" : " (no speech detected — inference skipped)") +
+            " → " + std::to_string(text.size()) + " chars"
                 + " format=" + response_format);
 
     if (response_format == "text") {
