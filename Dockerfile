@@ -59,6 +59,7 @@ RUN mkdir -p src/whisper src/server src/server/handlers src/auth src/audio && \
     touch src/whisper/StreamingWhisperEngine.cpp \
           src/whisper/VadGate.cpp \
           src/server.cpp \
+          src/server/SessionHandler.cpp \
           src/server/StreamingSession.cpp \
           src/server/AuthManager.cpp \
           src/server/ConnectionLimiter.cpp \
