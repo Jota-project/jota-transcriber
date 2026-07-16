@@ -22,7 +22,7 @@ High-performance real-time audio transcription microservice built with C++17 and
 - Authentication: static token or external API with in-memory cache
 - Per-IP and global connection limits, with an opt-in DNS-based exemption for a trusted gateway proxy
 - Non-blocking inference — GPU saturation skips a cycle instead of blocking
-- Audio buffer high-water mark (20s) with client-side warning
+- Audio buffer high-water mark (20s) with `flow_control` pause/resume and `dropped_chunks` warnings
 - Hallucination guard against Whisper decoder loops
 - Prometheus metrics at `/metrics`, health check at `/health`, readiness at `/ready`
 - Docker with NVIDIA GPU support
@@ -231,7 +231,8 @@ ws.send(float_samples.tobytes())
 |---|---|
 | `ready` | Session configured successfully |
 | `transcription` | Partial (`is_final: false`) or final (`is_final: true`) result |
-| `warning` | Non-fatal issue (e.g. `code: "buffer_full"` when the 20s buffer is saturated) |
+| `warning` | Non-fatal issue. `code: "buffer_full"` when the 20s buffer is saturated — sent every 10 dropped chunks while it stays saturated (field `dropped_chunks`, resets to 0 each time the buffer drains and a new saturation episode starts) |
+| `flow_control` | `action: "pause"` when the buffer hits the 20s high-water mark and the server starts dropping incoming audio; `action: "resume"` once it drains back below the 10s low-water mark. Informational — the server keeps dropping audio at the high-water mark regardless of whether the client honors this signal |
 | `error` | Fatal session error — connection closes after `AUTH_FAILED`, `AUTH_REQUIRED` |
 
 ### End of stream

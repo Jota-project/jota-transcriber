@@ -65,6 +65,7 @@ public:
           auth_manager_(auth_manager),
           configured_(false),
           buffer_overflowed_(false),
+          dropped_chunks_(0),
           capacity_degraded_(false),
           last_transcribed_size_(0),
           language_("es"),
@@ -210,18 +211,25 @@ private:
 
         last_audio_time_ = std::chrono::steady_clock::now();
         bool overflow = engine_->processAudioChunk(audio);
-        bool should_warn = overflow && !buffer_overflowed_;
-        buffer_overflowed_ = overflow;
+        bool entering_episode = overflow && !buffer_overflowed_;
+        size_t current_dropped = 0;
+        if (overflow) {
+            buffer_overflowed_ = true;
+            current_dropped = ++dropped_chunks_;
+        }
         lock.unlock();
 
-        if (should_warn) {
-            Log::warn("Audio buffer full, dropping incoming audio", session_id_);
-            json warning = {
+        if (entering_episode) {
+            Log::warn("Audio buffer full, entrando en pausa de flujo", session_id_);
+            sendMessage({{"type", "flow_control"}, {"action", "pause"}});
+        }
+        if (overflow && current_dropped % WARNING_INTERVAL_CHUNKS == 0) {
+            sendMessage({
                 {"type", "warning"},
                 {"code", "buffer_full"},
+                {"dropped_chunks", current_dropped},
                 {"message", "Audio buffer full, dropping incoming audio"}
-            };
-            sendMessage(warning);
+            });
         }
         // Inference is handled entirely by flushLoop to avoid blocking the receive loop.
     }
@@ -386,6 +394,8 @@ private:
                 configured_ = true;
                 last_transcribed_size_ = 0;
                 capacity_degraded_ = false;
+                buffer_overflowed_ = false;
+                dropped_chunks_ = 0;
                 full_transcription_    = "";
                 raw_transcription_     = "";
                 last_audio_time_ = std::chrono::steady_clock::now();
@@ -493,7 +503,9 @@ private:
     std::unique_ptr<StreamingWhisperEngine> engine_;
     std::string session_id_;
     bool configured_;
-    bool buffer_overflowed_; // true while engine buffer is above 20s HWM
+    static constexpr size_t WARNING_INTERVAL_CHUNKS = 10; // how often a dropped_chunks warning is re-sent during a saturation episode
+    bool buffer_overflowed_; // true while a saturation episode (HWM..LWM hysteresis) is active
+    size_t dropped_chunks_;  // chunks dropped in the CURRENT episode; resets to 0 when it ends
     bool capacity_degraded_; // true while this session's own inference cycles are being skipped (GPU saturated)
     size_t last_transcribed_size_;
     std::string language_;
@@ -630,11 +642,32 @@ private:
             auto res = engine_->transcribeSlidingWindow(false);
             // inf_guard releases the slot automatically on scope exit (including exceptions)
 
-            // If inference drained the buffer below HWM, reset the overflow flag so the
-            // next saturation episode triggers a new warning regardless of client audio timing.
-            constexpr size_t HIGH_WATER_MARK = 16000 * 20;
-            if (buffer_overflowed_ && engine_->getBufferSize() < HIGH_WATER_MARK) {
+            // If inference drained the buffer below the low-water mark, the saturation
+            // episode is over: report any drops not yet covered by a periodic warning,
+            // tell the client it can resume, then reset for the next episode.
+            constexpr size_t LOW_WATER_MARK = 16000 * 10;
+            if (buffer_overflowed_ && engine_->getBufferSize() < LOW_WATER_MARK) {
+                // Snapshot while still locked — dropped_chunks_ is state_mutex_-protected
+                // state written by processAudioChunk() on the WS receive thread, so it
+                // must not be read unlocked from this (flushLoop) thread below.
+                size_t dropped_snapshot = dropped_chunks_;
+                if (dropped_snapshot % WARNING_INTERVAL_CHUNKS != 0) {
+                    lock.unlock();
+                    sendMessage({
+                        {"type", "warning"},
+                        {"code", "buffer_full"},
+                        {"dropped_chunks", dropped_snapshot},
+                        {"message", "Audio buffer full, dropping incoming audio"}
+                    });
+                    lock.lock();
+                }
+                Log::info("flushLoop: saliendo de pausa de flujo (dropped=" +
+                          std::to_string(dropped_snapshot) + ")", session_id_);
+                lock.unlock();
+                sendMessage({{"type", "flow_control"}, {"action", "resume"}});
+                lock.lock();
                 buffer_overflowed_ = false;
+                dropped_chunks_ = 0;
             }
 
             // Hallucination guard: filter loops before updating state or sending to client.
