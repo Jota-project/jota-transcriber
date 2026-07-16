@@ -1,7 +1,6 @@
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/beast.hpp>
-#include <boost/beast/websocket.hpp>
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -16,7 +15,6 @@
 #include "server/SessionHandler.h"
 #include "server/ServerConfig.h"
 #include "server/ConnectionLimiter.h"
-#include "server/ConnectionGuard.h"
 #include "server/TrustedProxyResolver.h"
 #include "server/AuthManager.h"
 #include "auth/ApiAuthConfig.h"

@@ -85,7 +85,7 @@ void handleSession(tcp::socket socket,
         } else {
             boost::beast::http::read(socket, buffer, parser);
             auto req = parser.release();
-            handshake_watchdog.disarm();
+            handshake_watchdog.disarm(); // see TLS branch above (jota-transcriber#81)
 
             SendFn send = [&](http::response<http::string_body> res) {
                 boost::beast::http::write(socket, res);

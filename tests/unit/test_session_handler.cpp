@@ -56,7 +56,9 @@ TEST(SessionHandler, SlowHandlerSurvivesHandshakeTimeout) {
 
     HttpRouter router = buildSlowRouter(handler_delay);
     auto limiter = std::make_shared<ConnectionLimiter>(8, 2);
-    ApiAuthConfig auth_cfg; // no token/API → auth disabled
+    ApiAuthConfig auth_cfg; // handleSession() requires a non-null AuthManager;
+                             // the /slow route never consults it, so its
+                             // enabled/disabled state is irrelevant here
     auto auth_manager = std::make_shared<AuthManager>(auth_cfg);
 
     std::thread server_thread([&]() {
