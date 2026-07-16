@@ -53,6 +53,11 @@ void handleSession(tcp::socket socket,
             ssl_stream.handshake(ssl::stream_base::server);
             boost::beast::http::read(ssl_stream, buffer, parser);
             auto req = parser.release();
+            // Full request (headers + body) is in hand — whatever happens
+            // next (a synchronous handler or a WS upgrade) is legitimate
+            // processing, not the "client trickling data slowly" case this
+            // watchdog exists to guard against (jota-transcriber#81).
+            handshake_watchdog.disarm();
 
             SendFn send = [&](http::response<http::string_body> res) {
                 boost::beast::http::write(ssl_stream, res);
@@ -65,7 +70,6 @@ void handleSession(tcp::socket socket,
             }
 
             websocket::stream<ssl::stream<tcp::socket>> ws(std::move(ssl_stream));
-            handshake_watchdog.disarm();
             auto session = std::make_shared<StreamingSession<websocket::stream<ssl::stream<tcp::socket>>>>(
                 std::move(ws), config.model_path, auth_manager,
                 config.whisper_beam_size, config.whisper_threads,
@@ -81,6 +85,7 @@ void handleSession(tcp::socket socket,
         } else {
             boost::beast::http::read(socket, buffer, parser);
             auto req = parser.release();
+            handshake_watchdog.disarm();
 
             SendFn send = [&](http::response<http::string_body> res) {
                 boost::beast::http::write(socket, res);
@@ -93,7 +98,6 @@ void handleSession(tcp::socket socket,
             }
 
             websocket::stream<tcp::socket> ws(std::move(socket));
-            handshake_watchdog.disarm();
             auto session = std::make_shared<StreamingSession<websocket::stream<tcp::socket>>>(
                 std::move(ws), config.model_path, auth_manager,
                 config.whisper_beam_size, config.whisper_threads,

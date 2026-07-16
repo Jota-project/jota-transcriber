@@ -17,6 +17,7 @@ add_executable(unit_tests
     unit/test_handle_transcribe.cpp
     unit/test_socket_util.cpp
     unit/test_handshake_watchdog.cpp
+    unit/test_session_handler.cpp
     # Fuentes del servidor que no tienen dependencias de Boost/OpenSSL
     ${CMAKE_SOURCE_DIR}/src/audio/AudioDecoder.cpp
     ${CMAKE_SOURCE_DIR}/src/server/ConnectionLimiter.cpp
