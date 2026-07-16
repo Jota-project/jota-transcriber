@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/beast/websocket.hpp>
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include "server/SessionHandler.h"
@@ -14,6 +15,7 @@
 
 namespace beast = boost::beast;
 namespace http = beast::http;
+namespace websocket = boost::beast::websocket;
 namespace net = boost::asio;
 using tcp = boost::asio::ip::tcp;
 
@@ -97,4 +99,61 @@ TEST(SessionHandler, SlowHandlerSurvivesHandshakeTimeout) {
     EXPECT_EQ(res.body(), "done");
     EXPECT_GE(elapsed, handler_delay)
         << "response arrived before the handler's artificial delay finished";
+}
+
+// jota-transcriber#81 follow-up: the refactor made handleSession()'s
+// WebSocket-upgrade branch reachable from a test for the first time, but
+// only the non-upgrading HTTP path got one (above). This exercises the
+// is_upgrade branch itself: a real WS handshake through handleSession(),
+// followed by a wait past handshake_timeout_sec with no application traffic
+// (mirroring a client that's slow to send its first "config" message) to
+// prove the watchdog stays disarmed after handoff into StreamingSession —
+// not just for the synchronous-HTTP case.
+TEST(SessionHandler, WebSocketUpgradeSurvivesHandshakeTimeoutAfterHandoff) {
+    net::io_context ioc;
+    tcp::acceptor acceptor(ioc, tcp::endpoint(net::ip::make_address("127.0.0.1"), 0));
+    uint16_t port = acceptor.local_endpoint().port();
+
+    ServerConfig config;
+    config.handshake_timeout_sec = 1;                          // watchdog deadline
+    const auto post_upgrade_idle = std::chrono::milliseconds(1500); // exceeds it
+
+    HttpRouter router; // no HTTP routes registered — this request must fall through to WS upgrade
+    auto limiter = std::make_shared<ConnectionLimiter>(8, 2);
+    ApiAuthConfig auth_cfg; // handleSession() requires a non-null AuthManager;
+                             // no "config" message is ever sent in this test,
+                             // so its enabled/disabled state is irrelevant
+    auto auth_manager = std::make_shared<AuthManager>(auth_cfg);
+
+    std::thread server_thread([&]() {
+        tcp::socket socket(ioc);
+        acceptor.accept(socket);
+        SessionHandler::handleSession(std::move(socket), limiter, "127.0.0.1",
+                                       config, auth_manager, /*ssl_ctx=*/nullptr, router);
+    });
+
+    tcp::resolver resolver(ioc);
+    auto const results = resolver.resolve("127.0.0.1", std::to_string(port));
+    websocket::stream<tcp::socket> client_ws(ioc);
+    net::connect(client_ws.next_layer(), results.begin(), results.end());
+
+    boost::system::error_code ec;
+    client_ws.handshake("127.0.0.1", "/", ec);
+    ASSERT_FALSE(ec) << "WS handshake through handleSession() failed: " << ec.message();
+
+    // No "config", no audio — just sit on the open connection past the
+    // watchdog's deadline. If handleSession() ever regressed to disarming
+    // only after router.dispatch() (the pre-#81 behavior) or re-armed the
+    // watchdog anywhere on this branch, the fd would be force-shut here and
+    // the close handshake below would fail with a reset/broken-pipe error.
+    std::this_thread::sleep_for(post_upgrade_idle);
+
+    client_ws.close(websocket::close_code::normal, ec);
+
+    server_thread.join();
+
+    EXPECT_FALSE(ec) << "clean WS close failed (ec=" << ec.message()
+                      << ") — the handshake watchdog likely force-closed the "
+                         "socket after upgrade, before the idle client could "
+                         "send anything";
 }
