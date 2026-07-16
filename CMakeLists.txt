@@ -42,6 +42,7 @@ if(BUILD_SERVER)
 
     add_executable(jota-transcriber
         src/server.cpp
+        src/server/SessionHandler.cpp
         src/server/StreamingSession.cpp
         src/server/AuthManager.cpp
         src/server/ConnectionLimiter.cpp
