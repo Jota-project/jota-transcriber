@@ -2,6 +2,7 @@
 
 #include "whisper/VadGate.h"
 
+#include <cfloat>
 #include <filesystem>
 #include <whisper.h>
 
@@ -19,6 +20,18 @@ static VadGate makeGate() {
     p.min_silence_duration_ms = 2000;
     p.speech_pad_ms           = 400;
     return VadGate(VAD_MODEL_PATH, p, 4);
+}
+
+TEST(VadGateBehavior, FactoryCreatedGateDetectsPureSilenceAsNoSpeech) {
+    if (!std::filesystem::exists(VAD_MODEL_PATH)) {
+        GTEST_SKIP() << "VAD model not found: " << VAD_MODEL_PATH;
+    }
+    auto gate = VadGate::create(VAD_MODEL_PATH, 0.5f, 250, 2000, FLT_MAX, 400, 0.1f, 4);
+    ASSERT_NE(gate, nullptr);
+    std::vector<float> silence(16000 * 4, 0.0f);  // 4 s of zeros
+    auto result = gate->gate(silence);
+    EXPECT_FALSE(result.had_speech);
+    EXPECT_TRUE(result.samples.empty());
 }
 
 TEST(VadGateBehavior, EmptyInputHasNoSpeech) {
@@ -83,4 +96,28 @@ TEST(VadGateMapping, NonPositiveMapsToZero) {
 TEST(VadGateMapping, EmptyMappingReturnsZero) {
     std::vector<VadGate::SegmentMapping> empty;
     EXPECT_EQ(VadGate::mapGatedToOriginalSamples(empty, 5000, 96000), 0);
+}
+
+// Mapping fixture: leading original silence was trimmed before the first
+// speech segment (unlike twoSegmentMapping's seg A, which happens to start
+// at original 0 and so can't distinguish "mapped via the mapping" from
+// "short-circuited to zero").
+//   seg A: original [40000, 60000) -> gated [0, 20000)
+static std::vector<VadGate::SegmentMapping> leadingSilenceTrimmedMapping() {
+    return {
+        {0, 20000, 40000, 60000},
+    };
+}
+
+TEST(VadGateMapping, GatedZeroWithLeadingSilenceTrimmedMapsToSegmentOriginalStart) {
+    auto m = leadingSilenceTrimmedMapping();
+    // gated sample 0 is the very start of speech in the gated timeline, but
+    // in the original timeline that's after 40000 samples of trimmed leading
+    // silence -> must map to 40000, not 0.
+    EXPECT_EQ(VadGate::mapGatedToOriginalSamples(m, 0, 96000), 40000);
+}
+
+TEST(VadGateMapping, NegativeGatedSamplesStillMapsToZero) {
+    auto m = leadingSilenceTrimmedMapping();
+    EXPECT_EQ(VadGate::mapGatedToOriginalSamples(m, -5, 96000), 0);
 }

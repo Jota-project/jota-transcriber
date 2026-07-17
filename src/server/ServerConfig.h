@@ -46,4 +46,10 @@ struct ServerConfig {
 
     int shutdown_timeout_sec = 10;      // max seconds to wait for sessions to close on SIGINT/SIGTERM
     size_t max_upload_bytes = 25 * 1024 * 1024; // 25 MB — matches OpenAI limit
+    int max_audio_duration_sec = 600;   // 10 min — cap on DECODED PCM duration for /v1/audio/transcriptions (independent of max_upload_bytes, which caps upload bytes)
+
+    // HTTP-only temperature fallback (POST /v1/audio/transcriptions). Kept
+    // separate from whisper_temperature_inc (WS path) so streaming sessions
+    // keep their low-latency default of 0.0 unchanged.
+    float whisper_temperature_inc_http = 0.2f; // whisper.cpp's own upstream default
 };

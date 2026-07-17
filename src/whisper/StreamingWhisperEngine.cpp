@@ -324,14 +324,8 @@ void StreamingWhisperEngine::setVadConfig(const std::string& model_path,
                                           float max_speech_s,
                                           int speech_pad_ms,
                                           float samples_overlap) {
-    whisper_vad_params p = whisper_vad_default_params();
-    p.threshold               = threshold;
-    p.min_speech_duration_ms  = min_speech_ms;
-    p.min_silence_duration_ms = min_silence_ms;
-    p.max_speech_duration_s   = max_speech_s;
-    p.speech_pad_ms           = speech_pad_ms;
-    p.samples_overlap         = samples_overlap;
-    vad_gate_ = std::make_unique<VadGate>(model_path, p, n_threads_);
+    vad_gate_ = VadGate::create(model_path, threshold, min_speech_ms, min_silence_ms,
+                               max_speech_s, speech_pad_ms, samples_overlap, n_threads_);
     Log::info("VAD gating enabled (min_silence_ms=" + std::to_string(min_silence_ms) +
               ", speech_pad_ms=" + std::to_string(speech_pad_ms) + ")");
 }

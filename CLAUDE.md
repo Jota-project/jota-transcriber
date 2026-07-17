@@ -54,7 +54,7 @@ Tests require a model file at `third_party/whisper.cpp/models/ggml-base.bin`. VA
 
 ### VAD silence gating (Silero, always on)
 
-Runs whisper.cpp's public Silero VAD API (`whisper_vad_*`) in front of Whisper decoding, trimming silences ≥ `--vad-min-silence-ms` before inference. Implemented in `src/whisper/VadGate.h`/`.cpp`, wired through `StreamingWhisperEngine::setVadConfig()`. No env-var override — configure via CLI flags only (see `--vad-*` in `--help`) or `docker-compose.yml`'s `command:`. This is distinct from the older `vad_thold` client config / `--whisper-no-speech-thold`, which only tune Whisper's internal no-speech heuristic and are not real silence detection.
+Runs whisper.cpp's public Silero VAD API (`whisper_vad_*`) in front of Whisper decoding, trimming silences ≥ `--vad-min-silence-ms` before inference. Implemented in `src/whisper/VadGate.h`/`.cpp` (factory: `VadGate::create()`), wired through both `StreamingWhisperEngine::setVadConfig()` (WebSocket path) and `HandleTranscribe::handle()` (HTTP path, `POST /v1/audio/transcriptions`) — same `--vad-*` config applies to both. No env-var override — configure via CLI flags only (see `--vad-*` in `--help`) or `docker-compose.yml`'s `command:`. This is distinct from the older `vad_thold` client config / `--whisper-no-speech-thold`, which only tune Whisper's internal no-speech heuristic and are not real silence detection.
 
 # Generate self-signed certs
 ./generate_certs.sh

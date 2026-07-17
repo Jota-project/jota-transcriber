@@ -138,11 +138,13 @@ Model files must be placed in `./models/` before starting (mounted at `/app/mode
 | `--model-cache-ttl N` | `300` | Seconds to keep model loaded after last session (-1 = forever) |
 | `--whisper-initial-prompt TEXT` | — | Decoder initial prompt for vocabulary guidance |
 | `--whisper-temperature F` | `0.0` | Initial sampling temperature (`0.0` = greedy, fastest for streaming) |
-| `--whisper-temperature-inc F` | `0.0` | Temperature increment on repetition fallback (`0.0` disables fallback) |
+| `--whisper-temperature-inc F` | `0.0` | Temperature increment on repetition fallback, WS path (`0.0` disables fallback) |
+| `--whisper-temperature-inc-http F` | `0.2` | Same, but for `POST /v1/audio/transcriptions` only — whisper.cpp's own upstream default |
 | `--whisper-no-speech-thold F` | `0.3` | Probability threshold to reject non-speech segments |
 | `--whisper-logprob-thold F` | `-0.7` | Log-prob threshold to reject low-confidence segments (`-1.0` disables) |
 | `--flush-min-new-audio-ms N` | `500` | ms of new audio required before `flushLoop` re-runs inference |
 | `--max-upload-bytes N` | `26214400` (25 MB) | Max body size for `POST /v1/audio/transcriptions` |
+| `--max-audio-duration-sec N` | `600` (10 min) | Max DECODED PCM duration for `POST /v1/audio/transcriptions`, independent of upload byte size |
 | `--vad-model PATH` | `third_party/whisper.cpp/models/ggml-silero-v5.1.2.bin` | Silero VAD model file — silence gating is always on |
 | `--vad-threshold F` | `0.5` | VAD speech probability threshold |
 | `--vad-min-speech-ms N` | `250` | Minimum speech segment duration |
