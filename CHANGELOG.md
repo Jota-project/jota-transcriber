@@ -1,3 +1,10 @@
+## [1.4.2](https://github.com/Jota-project/jota-transcriber/compare/v1.4.1...v1.4.2) (2026-07-17)
+
+
+### Bug Fixes
+
+* audio duration cap, VAD gating and temperature fallback for /v1/audio/transcriptions ([#84](https://github.com/Jota-project/jota-transcriber/issues/84)) ([5d88c22](https://github.com/Jota-project/jota-transcriber/commit/5d88c2206fd43b539c9753aee10c82fad68b7538)), closes [#52](https://github.com/Jota-project/jota-transcriber/issues/52)
+
 ## [1.4.1](https://github.com/Jota-project/jota-transcriber/compare/v1.4.0...v1.4.1) (2026-07-16)
 
 
