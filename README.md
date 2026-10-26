@@ -34,13 +34,14 @@ High-performance real-time audio transcription microservice built with C++17 and
 - CMake 3.16+, GCC 9+ or Clang 10+ (C++17)
 - Boost (asio, beast, system, thread)
 - OpenSSL
+- CUDA is optional for a native build (pass `-DGGML_CUDA=1` to enable it); only the Docker image is always built with CUDA — see [Docker](#docker)
 
 ### Build
 
 ```bash
 # Clone with submodules (whisper.cpp is at third_party/whisper.cpp/)
-git clone --recursive https://github.com/your-username/transcription-service.git
-cd transcription-service
+git clone --recursive https://github.com/jota-project/jota-transcriber.git
+cd jota-transcriber
 
 # Build server + tests (static linking)
 cmake -B build -DBUILD_TESTS=ON -DBUILD_SERVER=ON -DBUILD_SHARED_LIBS=OFF
@@ -91,7 +92,7 @@ cd third_party/whisper.cpp/models
 ./generate_certs.sh
 ```
 
-> **Note on auth:** `AUTH_API_URL` was originally designed to point to `jota-db`. The recommended path forward is per-service `AUTH_TOKEN` (static), with `AUTH_API_URL` kept only for setups that still centralize auth via `jota-db`. The deprecation of `jota-db` as default auth backend is tracked in [`Jota-project/jota-gateway` issues](https://github.com/Jota-project/jota-gateway/issues). Leaving **both** `AUTH_TOKEN` and `AUTH_API_URL` empty disables authentication entirely — every token is accepted. Only rely on this when network placement already restricts who can reach the port (e.g. `network_mode: host` with no public bind, or a firewalled internal network).
+> **Note on auth:** `AUTH_API_URL` was originally designed to point to `jota-db`, which is now archived. Use per-service `AUTH_TOKEN` (static); `AUTH_API_URL` remains available for setups that validate tokens against their own backend. Leaving **both** `AUTH_TOKEN` and `AUTH_API_URL` empty disables authentication entirely — every token is accepted. Only rely on this when network placement already restricts who can reach the port (e.g. `network_mode: host` with no public bind, or a firewalled internal network).
 
 ### Run tests
 
@@ -254,6 +255,23 @@ The same port serves both WebSocket and HTTP:
 | `GET /health` | Returns `{"status": "ok"}` — always 200 if the process is alive |
 | `GET /ready` | Returns `{"status": "ready"}` (200) or `{"status": "busy"}` (503) based on inference capacity |
 | `GET /metrics` | Prometheus text format — active inferences, connections, model load state |
+| `POST /v1/audio/transcriptions` | OpenAI-compatible file transcription (`multipart/form-data`) — see below |
+
+### `POST /v1/audio/transcriptions`
+
+Same auth as the WebSocket: when auth is enabled, send `Authorization: Bearer <token>` (401 otherwise).
+
+| Field | Required | Description |
+|---|---|---|
+| `file` | yes | Audio file in any container/codec the server's FFmpeg (libav) decoder accepts |
+| `model` | yes | Required for OpenAI compatibility; the server always uses the model loaded with `--model` |
+| `language` | no | Defaults to `auto` |
+| `prompt` | no | Initial prompt; falls back to `--whisper-initial-prompt` |
+| `temperature` | no | `0.0`–`1.0` (out of range → 400); defaults to `--whisper-temperature`. Fallback increment: `--whisper-temperature-inc-http` |
+| `task` | no | `transcribe` (default) or `translate` |
+| `response_format` | no | `json` (default) → `{"text": "..."}`; `text` → `text/plain`; `verbose_json` → `id`, `created_at`, `task`, `language`, `duration`, `text` and `segments` (`start`, `end`, `text`, `no_speech_prob`). Other values → 400 |
+
+Limits: request body up to `--max-upload-bytes` and decoded audio up to `--max-audio-duration-sec` (413 otherwise); 503 when every inference slot is busy. When VAD finds no speech, inference is skipped and the returned text is empty.
 
 ## Architecture
 
@@ -300,9 +318,8 @@ See [`clients/`](clients/) for a Python test client (file / mic / synthetic audi
 
 ## Status & roadmap
 
-- **Status:** Maintained. Recent work (2026-05) focused on stability fixes — `ModelCache` RAII, `AudioDecoder` robustness, `InferenceLimiter` TOCTOU.
-- **Known issue:** race condition between `flushLoop` and `handleEnd` may emit duplicate `is_final` transcriptions. Fix is straightforward; see issue #27.
-- **Auth migration:** the default auth path will move from `jota-db` external API to per-service `AUTH_TOKEN` static. `AUTH_API_URL` will remain as an option.
+- **Status:** Maintained. Latest release: v1.4.2 (2026-07-17). Recent work (2026-07): Silero VAD silence gating (v1.3.0), WebSocket backpressure with `flow_control` / `dropped_chunks` (v1.4.0), `HandshakeWatchdog` no longer killing long-running HTTP requests (v1.4.1), and duration cap, VAD gating and temperature fallback for `POST /v1/audio/transcriptions` (v1.4.2). See [`CHANGELOG.md`](CHANGELOG.md).
+- **Auth:** per-service static `AUTH_TOKEN`; `AUTH_API_URL` remains as an option (`jota-db`, which it originally targeted, is archived).
 
 ---
 
