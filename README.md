@@ -39,8 +39,8 @@ High-performance real-time audio transcription microservice built with C++17 and
 
 ```bash
 # Clone with submodules (whisper.cpp is at third_party/whisper.cpp/)
-git clone --recursive https://github.com/your-username/transcription-service.git
-cd transcription-service
+git clone --recursive https://github.com/jota-project/jota-transcriber.git
+cd jota-transcriber
 
 # Build server + tests (static linking)
 cmake -B build -DBUILD_TESTS=ON -DBUILD_SERVER=ON -DBUILD_SHARED_LIBS=OFF
@@ -91,7 +91,7 @@ cd third_party/whisper.cpp/models
 ./generate_certs.sh
 ```
 
-> **Note on auth:** `AUTH_API_URL` was originally designed to point to `jota-db`. The recommended path forward is per-service `AUTH_TOKEN` (static), with `AUTH_API_URL` kept only for setups that still centralize auth via `jota-db`. The deprecation of `jota-db` as default auth backend is tracked in [`Jota-project/jota-gateway` issues](https://github.com/Jota-project/jota-gateway/issues). Leaving **both** `AUTH_TOKEN` and `AUTH_API_URL` empty disables authentication entirely — every token is accepted. Only rely on this when network placement already restricts who can reach the port (e.g. `network_mode: host` with no public bind, or a firewalled internal network).
+> **Note on auth:** use a per-service static `AUTH_TOKEN` (`--auth-token`). `AUTH_API_URL` is the **legacy** auth path: it was designed to point to `jota-db`, which is deprecated (unused since jota-gateway v1.9.0) and will be archived. Keep `AUTH_API_URL` only if an existing setup still depends on it; note that when set it takes precedence over `AUTH_TOKEN`. Leaving **both** `AUTH_TOKEN` and `AUTH_API_URL` empty disables authentication entirely — every token is accepted. Only rely on this when network placement already restricts who can reach the port (e.g. `network_mode: host` with no public bind, or a firewalled internal network).
 
 ### Run tests
 
@@ -113,6 +113,8 @@ docker-compose up --build
 Model files must be placed in `./models/` before starting (mounted at `/app/models/` inside the container). This must include the Silero VAD model (`ggml-silero-v5.1.2.bin`) alongside the main Whisper model — silence gating is always on and has no environment-variable override, so `docker-compose.yml` passes `--vad-model /app/models/ggml-silero-v5.1.2.bin` explicitly.
 
 ## CLI Reference
+
+> **Ports:** `9001` is the binary default, `8003` is the `PORT` set in `.env.example` (used by Docker), and jota-gateway's `TRANSCRIBER_WS_URL` defaults to `localhost:9000`; point that URL at the port the transcriber actually listens on.
 
 | Flag | Default | Description |
 |---|---|---|
@@ -301,8 +303,7 @@ See [`clients/`](clients/) for a Python test client (file / mic / synthetic audi
 ## Status & roadmap
 
 - **Status:** Maintained. Recent work (2026-05) focused on stability fixes — `ModelCache` RAII, `AudioDecoder` robustness, `InferenceLimiter` TOCTOU.
-- **Known issue:** race condition between `flushLoop` and `handleEnd` may emit duplicate `is_final` transcriptions. Fix is straightforward; see issue #27.
-- **Auth migration:** the default auth path will move from `jota-db` external API to per-service `AUTH_TOKEN` static. `AUTH_API_URL` will remain as an option.
+- **Auth:** per-service static `AUTH_TOKEN` is the recommended path. `AUTH_API_URL` (external auth API, originally `jota-db`) remains only as a legacy option; `jota-db` is deprecated and will be archived.
 
 ---
 
